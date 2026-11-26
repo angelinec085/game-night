@@ -25,6 +25,7 @@
   const gameHostControls = document.getElementById("game-host-controls");
   const gameGuestWaiting = document.getElementById("game-guest-waiting");
   const gamePlayerList = document.getElementById("game-player-list");
+  const appElement = document.querySelector(".app");
   const games = window.GameNightGames || [];
   let room = null;
   let currentPlayers = [];
@@ -173,10 +174,15 @@
     const game = games.find(function (availableGame) {
       return availableGame.id === selectedGameId;
     });
-    const enoughPlayers = game && currentPlayers.length >= game.minPlayers;
+    const enoughPlayers = game && currentPlayers.length >= game.minPlayers &&
+      (!game.maxPlayers || currentPlayers.length <= game.maxPlayers);
     startButton.disabled = !enoughPlayers;
     startHelp.textContent = game
-      ? (enoughPlayers ? "Everyone's here. Ready when you are!" : "At least " + game.minPlayers + " players are needed to start.")
+      ? (enoughPlayers
+        ? "Everyone's here. Ready when you are!"
+        : currentPlayers.length < game.minPlayers
+          ? "At least " + game.minPlayers + " players are needed to start."
+          : "This game supports up to " + game.maxPlayers + " players.")
       : "Choose a game to get started.";
   }
 
@@ -226,6 +232,8 @@
       return;
     }
 
+    appElement.classList.toggle("has-card-auction", activeGame.id === "card-auction");
+    appElement.classList.toggle("has-life-path", activeGame.id === "life-path");
     document.getElementById("game-title").textContent = activeGame.name;
     activeGameState = gameData.state;
     if (activeGame.initialize) {
@@ -244,6 +252,8 @@
     pendingGame = null;
     pendingPrivateState = null;
     currentGameContent.replaceChildren();
+    appElement.classList.remove("has-card-auction");
+    appElement.classList.remove("has-life-path");
     gameNotice.textContent = "";
     gameHostControls.hidden = true;
     gameGuestWaiting.hidden = true;
@@ -286,6 +296,8 @@
         room = null;
         if (disconnectedRoom) disconnectedRoom.close();
         clearSavedRoom();
+        appElement.classList.remove("has-card-auction");
+        appElement.classList.remove("has-life-path");
         homeMessage.textContent = message + " Please rejoin the room.";
         showScreen("home");
       },
@@ -294,6 +306,8 @@
         room = null;
         if (disconnectedRoom) disconnectedRoom.close();
         activeGame = null;
+        appElement.classList.remove("has-card-auction");
+        appElement.classList.remove("has-life-path");
         pendingGame = null;
         clearSavedRoom();
         showScreen("closed");
@@ -312,7 +326,11 @@
   function enterRoom(joinedRoom, name) {
     room = joinedRoom;
     if (joinedRoom.isHost) {
-      selectedGameId = null;
+      // New rooms start with Card Auction selected; other games remain host-selectable.
+      selectedGameId = games.some(function (game) {
+        return game.id === "card-auction";
+      }) ? "card-auction" : null;
+      if (selectedGameId) joinedRoom.selectGame(selectedGameId);
     }
     roomCodeHeading.textContent = joinedRoom.code;
     roomScreen.querySelector(".room-code").setAttribute("aria-label", "Room code " + joinedRoom.code);
@@ -383,7 +401,8 @@
     const game = games.find(function (availableGame) {
       return availableGame.id === selectedGameId;
     });
-    if (!room || !room.isHost || !game || currentPlayers.length < game.minPlayers) return;
+    if (!room || !room.isHost || !game || currentPlayers.length < game.minPlayers ||
+        (game.maxPlayers && currentPlayers.length > game.maxPlayers)) return;
 
     const result = game.start(currentPlayers);
     const state = result && Object.prototype.hasOwnProperty.call(result, "state")
@@ -400,6 +419,8 @@
     room = null;
     activeGame = null;
     activeGameState = null;
+    appElement.classList.remove("has-card-auction");
+    appElement.classList.remove("has-life-path");
     clearSavedRoom();
     currentPlayers = [];
     showScreen("home");

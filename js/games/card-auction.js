@@ -22,6 +22,11 @@
   let selectedCard = null;
   let locallyLocked = false;
   let resultReported = false;
+  let recentlyUsedCard = null;
+  let removalTimer = null;
+  let activeRevealKey = null;
+  let activeRevealUntil = 0;
+  let revealTimer = null;
 
   function shuffle(cards) {
     const shuffled = cards.slice();
@@ -62,7 +67,7 @@
   }
 
   function publicState() {
-    // This shared snapshot contains scores and lock status, never hands or unrevealed bets.
+    // Shared snapshots show card counts and lock status, but hide scores and secret cards.
     return {
       round: state.round,
       totalRounds: 13,
@@ -79,15 +84,25 @@
       } : null,
       activeIds: state.activeIds.slice(),
       players: state.players.map(function (player) {
+        const publicPlayer = {
+          id: player.id,
+          name: player.name,
+          color: player.color,
+          isLeft: player.isLeft,
+          locked: player.locked,
+          remainingCards: privateByPlayer[player.id] ? privateByPlayer[player.id].hand.length : 0
+        };
+        return publicPlayer;
+      }),
+      finalResults: state.phase === "finished" ? state.players.map(function (player) {
         return {
           id: player.id,
           name: player.name,
-          score: player.score,
           color: player.color,
           isLeft: player.isLeft,
-          locked: player.locked
+          score: player.score
         };
-      }),
+      }) : null,
       lastReveal: state.lastReveal,
       log: state.log.slice(-6),
       finalWinners: state.finalWinners
@@ -119,10 +134,28 @@
     if (currentContext && currentContext.isHost) {
       const currentPrivateStates = privateStates();
       if (currentPrivateStates[playerId]) {
-        myPrivateState = currentPrivateStates[playerId];
+        updateMyPrivateState(currentPrivateStates[playerId]);
       }
       currentContext.publish(publicState(), currentPrivateStates);
     }
+  }
+
+  function updateMyPrivateState(nextPrivateState) {
+    if (myPrivateState && nextPrivateState) {
+      const usedCard = nextPrivateState.used.find(function (value) {
+        return myPrivateState.used.indexOf(value) === -1;
+      });
+      if (usedCard !== undefined) {
+        recentlyUsedCard = usedCard;
+        if (removalTimer) clearTimeout(removalTimer);
+        removalTimer = setTimeout(function () {
+          recentlyUsedCard = null;
+          removalTimer = null;
+          if (currentContext) currentContext.render();
+        }, 360);
+      }
+    }
+    myPrivateState = nextPrivateState;
   }
 
   function clearLocks() {
@@ -198,7 +231,8 @@
       const winner = playerFor(tiedBets[0].id);
       const won = state.pot;
       winner.score += won;
-      addLog("Round " + state.round + ": " + winner.name + " won " + won + " points with a " + cardName(tiedBets[0].value) + ".");
+      state.lastReveal.winnerId = winner.id;
+      addLog("Round " + state.round + ": " + winner.name + " won the pot.");
       state.pot = 0;
       state.tieStreak = 0;
       state.activeIds = state.players.filter(function (player) {
@@ -220,7 +254,7 @@
     state.tieStreak += 1;
     addLog("Round " + state.round + ": " + tiedBets.map(function (bet) {
       return bet.name;
-    }).join(" and ") + " tied. The " + state.pot + "-point pot carries over.");
+    }).join(" and ") + " tied; the pot carries over.");
 
     if (state.tieStreak >= 3 || middleDeck.length === 0) {
       beginTieBreaker();
@@ -232,7 +266,7 @@
   function beginTieBreaker() {
     const activeCount = state.activeIds.filter(isActive).length;
     if (activeCount === 1) {
-      awardTieBreakerPot(state.activeIds.find(isActive), "won the pot after the other tied players left");
+      awardTieBreakerPot(state.activeIds.find(isActive), "after the other tied players left");
       return;
     }
     if (activeCount < 2) {
@@ -277,7 +311,7 @@
 
       const winner = beats[first.choice] === second.choice ? first : second;
       state.lastReveal = { kind: "tiebreak", choices: revealedChoices, winnerId: winner.id };
-      awardTieBreakerPot(winner.id, "won the pot with " + titleCase(winner.choice));
+      awardTieBreakerPot(winner.id, "with " + titleCase(winner.choice));
       return;
     }
 
@@ -300,7 +334,7 @@
       return;
     }
 
-    awardTieBreakerPot(oddChoice.id, "was the odd pick in Up or Down");
+    awardTieBreakerPot(oddChoice.id, "as the odd pick in Up or Down");
   }
 
   function titleCase(value) {
@@ -325,7 +359,8 @@
 
     const won = state.pot;
     winner.score += won;
-    addLog(winner.name + " " + reason + " and won " + won + " points.");
+    addLog(winner.name + " won the pot " + reason + ".");
+    if (state.lastReveal) state.lastReveal.winnerId = winner.id;
     state.pot = 0;
     state.tieStreak = 0;
     state.tieBreaker = null;
@@ -408,61 +443,105 @@
     return escapeHTML(value);
   }
 
-  function renderScoreboard(publicData) {
-    return publicData.players.slice().sort(function (first, second) {
+  function renderFinalResults(publicData) {
+    const results = (publicData.finalResults || []).slice().sort(function (first, second) {
       return second.score - first.score;
-    }).map(function (player) {
-      const active = publicData.activeIds.indexOf(player.id) !== -1;
-      const winner = publicData.phase === "finished" && publicData.finalWinners.indexOf(player.id) !== -1;
-      let status = "Watching";
-      if (player.isLeft) {
-        status = "Left";
-      } else if (active && player.locked) {
-        status = "Locked in ✓";
-      } else if (active && publicData.phase === "betting") {
-        status = "Not locked in";
-      } else if (active && publicData.phase === "tiebreak") {
-        status = "Not locked in";
-      }
-
-      return '<div class="ca-player' + (player.isLeft ? " ca-player-left" : "") +
-        (winner ? " ca-final-winner" : "") + '" style="--player-color:' +
+    });
+    const rows = results.map(function (player) {
+      const winner = publicData.finalWinners.indexOf(player.id) !== -1;
+      return '<div class="ca-result-row' + (winner ? " is-winner" : "") +
+        (player.isLeft ? " is-left" : "") + '" style="--player-color:' +
         escapeAttribute(player.color) + '">' +
-        '<span class="ca-player-name"><i></i>' + escapeHTML(player.name) +
+        '<span class="ca-result-name"><i></i>' + escapeHTML(player.name) +
         (player.isLeft ? ' <small>(left)</small>' : "") + '</span>' +
-        '<strong>' + player.score + '</strong>' +
-        '<span class="ca-player-status">' + escapeHTML(status) + '</span></div>';
+        '<strong>' + player.score + '</strong></div>';
     }).join("");
+    const heading = publicData.finalWinners.length > 1 ? "Joint winners!" : "Final scores";
+    return '<section class="ca-final-results"><h3>' + heading + '</h3>' +
+      '<p>The winner is highlighted below.</p><div class="ca-results">' + rows + '</div></section>';
   }
 
-  function renderLastReveal(reveal, publicData) {
-    if (!reveal) return "";
-    if (reveal.kind === "bets") {
-      return '<div class="ca-reveal"><strong>Revealed bets</strong><span>' +
-        reveal.bets.map(function (bet) {
-          const player = publicData.players.find(function (entry) {
-            return entry.id === bet.id;
-          });
-          const color = player ? escapeAttribute(player.color) : "#527b5a";
-          return '<span class="ca-revealed-bet" style="--player-color:' + color + '">' +
-            escapeHTML(bet.name) + ': <strong>' + cardName(bet.value) + '</strong></span>';
-        }).join("") + '</span></div>';
+  function revealKey(reveal) {
+    return reveal ? JSON.stringify(reveal) : null;
+  }
+
+  function revealIsVisible(reveal) {
+    const key = revealKey(reveal);
+    if (!key) return false;
+    if (key !== activeRevealKey) {
+      activeRevealKey = key;
+      activeRevealUntil = Date.now() + 1500;
     }
-    if (reveal.choices) {
-      const label = reveal.kind === "rps-draw" || reveal.kind === "up-down-draw"
-        ? "Tie-break draw"
-        : "Tie-break revealed";
-      return '<div class="ca-reveal"><strong>' + label + '</strong><span>' +
-        reveal.choices.map(function (choice) {
-          const player = publicData.players.find(function (entry) {
-            return entry.id === choice.id;
-          });
-          const color = player ? escapeAttribute(player.color) : "#527b5a";
-          return '<span class="ca-revealed-bet" style="--player-color:' + color + '">' +
-            escapeHTML(choice.name) + ': <strong>' + titleCase(choice.choice) + '</strong></span>';
-        }).join("") + '</span></div>';
+    return Date.now() < activeRevealUntil;
+  }
+
+  function renderPlayerSeat(player, position, publicData, showReveal) {
+    const active = publicData.activeIds.indexOf(player.id) !== -1;
+    const isLocal = player.id === playerId;
+    const locked = player.locked && active &&
+      (publicData.phase === "betting" || publicData.phase === "tiebreak");
+    const orientation = position === "left" || position === "right" ? " is-vertical" : "";
+    const backs = isLocal ? "" : Array.from({ length: player.remainingCards }, function () {
+      return '<i class="ca-card-back" aria-hidden="true"></i>';
+    }).join("");
+    const bet = showReveal && publicData.lastReveal && publicData.lastReveal.kind === "bets"
+      ? publicData.lastReveal.bets.find(function (entry) {
+        return entry.id === player.id;
+      })
+      : null;
+    const betCard = bet
+      ? '<span class="ca-bet-card is-revealed' +
+        (publicData.lastReveal.winnerId === player.id ? " is-winner" : "") +
+        '"><strong>' + cardName(bet.value) + '</strong></span>'
+      : locked && publicData.phase === "betting"
+        ? '<span class="ca-bet-card is-hidden" aria-label="Bet locked face down"><i></i></span>'
+        : "";
+    const positionStyle = position.indexOf("ring:") === 0
+      ? ' style="--player-color:' + escapeAttribute(player.color) + ";" + position.slice(5) + '"'
+      : ' style="--player-color:' + escapeAttribute(player.color) + '"';
+
+    return '<div class="ca-seat ca-seat-' + (position.indexOf("ring:") === 0 ? "ring" : position) +
+      (isLocal ? " is-local" : "") + (player.isLeft ? " is-left" : "") +
+      (locked ? " is-locked" : "") + '"' + positionStyle + '>' +
+      '<div class="ca-seat-name"><i></i><strong>' + escapeHTML(player.name) + '</strong>' +
+      (player.isLeft ? '<small>left</small>' : "") +
+      (locked ? '<span class="ca-lock-badge" aria-label="Locked in">✓</span>' : "") + '</div>' +
+      (backs ? '<div class="ca-card-stack' + orientation + '" aria-label="' +
+        player.remainingCards + ' cards remaining">' + backs + '</div>' : "") +
+      betCard + '</div>';
+  }
+
+  function renderSeats(publicData, showReveal) {
+    const localPlayer = publicData.players.find(function (player) {
+      return player.id === playerId;
+    });
+    const opponents = publicData.players.filter(function (player) {
+      return player.id !== playerId;
+    });
+    let seats = "";
+
+    opponents.forEach(function (player, index) {
+      let position;
+      if (opponents.length === 1) {
+        position = "top";
+      } else if (publicData.players.length === 3) {
+        position = index === 0 ? "left" : "right";
+      } else if (publicData.players.length === 4) {
+        position = ["left", "top", "right"][index];
+      } else {
+        // Keep opponents in room order as they travel clockwise from the local seat.
+        const angle = (90 + (360 * (index + 1) / publicData.players.length)) * Math.PI / 180;
+        const x = 50 + Math.cos(angle) * 44;
+        const y = 50 + Math.sin(angle) * 39;
+        position = "ring:--seat-x:" + x.toFixed(2) + "%;--seat-y:" + y.toFixed(2) + "%";
+      }
+      seats += renderPlayerSeat(player, position, publicData, showReveal);
+    });
+
+    if (localPlayer) {
+      seats += renderPlayerSeat(localPlayer, "bottom", publicData, showReveal);
     }
-    return "";
+    return seats;
   }
 
   function renderTieBreaker(publicData, activePlayer, locked) {
@@ -487,54 +566,7 @@
       " tied players locked in</small></section></div>";
   }
 
-  function addStyles() {
-    if (document.getElementById("card-auction-styles")) return;
-    const style = document.createElement("style");
-    style.id = "card-auction-styles";
-    style.textContent = [
-      ".ca-game{color:#344b3b}",
-      ".ca-top{display:grid;grid-template-columns:1fr 1.2fr 1fr;gap:10px;margin:18px 0}",
-      ".ca-top-box{padding:12px;border-radius:14px;background:#f3f8f2;text-align:center}",
-      ".ca-top-box small{display:block;color:#718174;font-size:.74rem}",
-      ".ca-top-box strong{display:block;margin-top:3px;font-size:1.15rem}",
-      ".ca-middle-card{display:inline-grid;min-width:50px;min-height:62px;margin-top:5px;place-content:center;border:1px solid #d6e4d4;border-radius:10px;background:#fff;box-shadow:0 3px 8px #344b3b18;font-size:1.35rem}",
-      ".ca-middle-card small{font-size:.7rem}",
-      ".ca-scoreboard{display:grid;gap:7px;margin:15px 0}",
-      ".ca-player{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:10px;padding:9px 11px;border-left:4px solid var(--player-color);border-radius:10px;background:#f5f9f4}",
-      ".ca-player-left{opacity:.62}",
-      ".ca-player-name{min-width:0;overflow-wrap:anywhere;font-weight:700}",
-      ".ca-player-name i{display:inline-block;width:9px;height:9px;margin-right:7px;border-radius:50%;background:var(--player-color)}",
-      ".ca-player-name small,.ca-player-status{color:#718174;font-size:.74rem;font-weight:400}",
-      ".ca-log{max-height:120px;overflow:auto;margin-top:15px;padding:11px 13px;border-radius:12px;background:#f7faf6;color:#596b5c;font-size:.8rem}",
-      ".ca-log ul{display:grid;gap:5px;margin:7px 0 0;padding-left:17px}",
-      ".ca-reveal{display:grid;gap:4px;margin:12px 0;padding:10px 12px;border-radius:11px;background:#edf5eb;font-size:.82rem}",
-      ".ca-revealed-bet{display:inline-block;margin:3px 7px 3px 0;padding:4px 8px;border-left:3px solid var(--player-color);border-radius:5px;background:#fff}",
-      ".ca-hand{display:flex;flex-wrap:wrap;gap:7px;margin:9px 0 12px}",
-      ".ca-card{display:grid;min-width:43px;min-height:57px;place-content:center;gap:2px;border:1px solid #d8e5d6;border-top:3px solid var(--player-color,#8eae91);border-radius:9px;background:#fff;color:#3c5742;box-shadow:0 2px 6px #344b3b14;cursor:pointer;font:inherit}",
-      ".ca-card strong{font-size:1.08rem}",
-      ".ca-card small{text-align:center;color:#718174;font-size:.68rem}",
-      ".ca-card.is-selected{border-color:#5d8a63;background:#eaf4e8;box-shadow:0 0 0 2px #5d8a6330}",
-      ".ca-card.is-used{background:#e8eae7;color:#9aa19a;box-shadow:none;cursor:not-allowed}",
-      ".ca-card:disabled:not(.is-used){opacity:.5;cursor:not-allowed}",
-      ".ca-lock-button,.ca-choice{min-height:41px;padding:0 15px;border:0;border-radius:11px;background:#527b5a;color:#fff;font:inherit;font-weight:700;cursor:pointer}",
-      ".ca-lock-button:disabled,.ca-choice:disabled{opacity:.5;cursor:not-allowed}",
-      ".ca-hand-note{margin:0;color:#718174;font-size:.8rem}",
-      ".ca-modal-backdrop{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:18px;background:#26352db8}",
-      ".ca-modal{width:min(100%,390px);padding:24px;border:1px solid #d8e5d6;border-radius:20px;background:#fff;box-shadow:0 18px 55px #14201944;text-align:center}",
-      ".ca-modal h3{margin:0;color:#36553d}",
-      ".ca-modal p{color:#718174;line-height:1.45}",
-      ".ca-choice-list{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin:17px 0}",
-      ".ca-choice{background:#e8f2e7;color:#3b6345}",
-      ".ca-modal small{color:#718174}",
-      ".ca-final{padding:13px;border-radius:13px;background:#edf5eb}",
-      ".ca-final-winner{outline:2px solid #6f9a70;background:#eaf4e8}",
-      "@media(max-width:480px){.ca-top{grid-template-columns:1fr 1fr}.ca-top-box:nth-child(2){grid-column:1/-1;grid-row:1}.ca-player{grid-template-columns:minmax(0,1fr) auto}.ca-player-status{grid-column:1/-1;padding-left:16px}.ca-card{min-width:39px}}"
-    ].join("");
-    document.head.appendChild(style);
-  }
-
   function render(publicData) {
-    addStyles();
     if (!publicData) return '<p class="ca-hand-note">Preparing the auction…</p>';
 
     const myPlayer = publicData.players.find(function (player) {
@@ -544,80 +576,90 @@
     const betting = publicData.phase === "betting";
     const locked = Boolean(myPlayer && myPlayer.locked) || locallyLocked;
     const canBet = betting && active && !locked;
-    const used = myPrivateState ? myPrivateState.used : [];
     const hand = myPrivateState ? myPrivateState.hand : [];
-    const usedCards = new Set(used);
     const canShowCards = Boolean(myPrivateState);
-    const cardButtons = CARD_VALUES.map(function (value) {
-      const isUsed = usedCards.has(value);
+    const showReveal = revealIsVisible(publicData.lastReveal);
+    const cardButtons = hand.map(function (value) {
       const isSelected = selectedCard === value;
-      const disabled = isUsed || !canBet || !canShowCards || hand.indexOf(value) === -1;
-      return '<button class="ca-card' + (isUsed ? " is-used" : "") + (isSelected ? " is-selected" : "") +
+      const disabled = !canBet || !canShowCards;
+      return '<button class="ca-card' + (isSelected ? " is-selected" : "") +
         '" type="button" data-card="' + value + '"' + (disabled ? " disabled" : "") + '>' +
         '<strong>' + cardName(value) + '</strong><small>' + value + '</small></button>';
     }).join("");
+    const departingCard = recentlyUsedCard !== null && hand.indexOf(recentlyUsedCard) === -1
+      ? '<span class="ca-card is-removing" aria-hidden="true"><strong>' +
+        cardName(recentlyUsedCard) + '</strong><small>' + recentlyUsedCard + '</small></span>'
+      : "";
 
     const recentLog = publicData.log.slice().reverse().map(function (line) {
       return "<li>" + escapeHTML(line) + "</li>";
     }).join("");
-    const winnerIds = publicData.finalWinners || [];
-    const finalTitle = winnerIds.length > 1 ? "Joint win!" : "Game over!";
-    const finalPanel = publicData.phase === "finished"
-      ? '<section class="ca-final"><h3>' + finalTitle + '</h3></section>'
-      : "";
-    const reveal = renderLastReveal(publicData.lastReveal, publicData);
     const handLabel = publicData.phase === "finished"
-      ? "Your cards"
+      ? "Auction complete"
       : active
         ? (locked ? "Your card is locked in" : "Choose one card from your hand")
-        : "Your hand (watching this round)";
+        : "Your hand";
     const lockButton = canBet && selectedCard !== null
       ? '<button class="ca-lock-button" type="button" data-lock-bet>Lock in ' + cardName(selectedCard) + '</button>'
       : "";
     const tieBreaker = renderTieBreaker(publicData, active, locked);
-    const roundLabel = publicData.round + " / " + publicData.totalRounds;
-    const middle = publicData.middleCard
-      ? '<span class="ca-middle-card"><strong>' + cardName(publicData.middleCard) +
-        '</strong><small>' + publicData.middleCard + " points</small></span><p class=\"ca-hand-note\">" +
-        publicData.remainingMiddle + " cards face down</p>"
-      : '<span class="ca-hand-note">Not revealed</span>';
-    const winnerNotice = winnerIds.length > 1
-      ? "Joint winners: " + publicData.players.filter(function (player) {
-        return winnerIds.indexOf(player.id) !== -1;
-      }).map(function (player) {
-        return player.name;
-      }).join(", ")
-      : winnerIds.length === 1
-        ? "Winner: " + (publicData.players.find(function (player) {
-          return player.id === winnerIds[0];
-        }) || {}).name
-        : "";
+    const winner = showReveal && publicData.lastReveal && publicData.lastReveal.winnerId
+      ? publicData.players.find(function (player) {
+        return player.id === publicData.lastReveal.winnerId;
+      })
+      : null;
+    const potTransfer = winner
+      ? '<div class="ca-pot-transfer">Pot to ' + escapeHTML(winner.name) + '</div>'
+      : "";
+    const tieReveal = showReveal && publicData.lastReveal && publicData.lastReveal.choices
+      ? '<p class="ca-reveal-note">' + publicData.lastReveal.choices.map(function (choice) {
+        return escapeHTML(choice.name) + ": " + escapeHTML(titleCase(choice.choice));
+      }).join(" · ") + '</p>'
+      : "";
 
     return '<div class="ca-game">' +
-      '<div class="ca-top">' +
-        '<div class="ca-top-box"><small>Round</small><strong>' + roundLabel + '</strong></div>' +
-        '<div class="ca-top-box"><small>Middle card</small>' + middle + '</div>' +
-        '<div class="ca-top-box"><small>Pot</small><strong>' + publicData.pot + ' points</strong></div>' +
+      '<div class="ca-table" aria-label="Card Auction table">' +
+        renderSeats(publicData, showReveal) +
+        '<section class="ca-center">' +
+          '<span class="ca-round-label">Round ' + publicData.round + ' / ' + publicData.totalRounds + '</span>' +
+          '<div class="ca-center-card">' + (publicData.middleCard
+            ? '<strong>' + cardName(publicData.middleCard) + '</strong><small>' + publicData.middleCard + ' points</small>'
+            : '<small>Not revealed</small>') + '</div>' +
+          '<div class="ca-pot"><small>Pot</small><strong>' + publicData.pot + '</strong></div>' +
+          '<small class="ca-cards-left">' + publicData.remainingMiddle + ' cards left</small>' +
+        '</section>' +
+        potTransfer + tieReveal +
+        '<section class="ca-hand-area">' +
+          '<div class="ca-hand-heading"><strong>' + handLabel + '</strong>' +
+            (active && locked && publicData.phase !== "finished"
+              ? '<span class="ca-lock-badge">✓ locked in</span>' : "") +
+          '</div>' +
+          (publicData.phase !== "finished" && canShowCards
+            ? '<div class="ca-hand" style="--player-color:' + escapeAttribute(myPlayer.color) + '">' +
+              departingCard + cardButtons + '</div>'
+            : publicData.phase !== "finished"
+              ? '<p class="ca-hand-note">Your private hand is loading…</p>'
+              : '<p class="ca-hand-note">All of your cards have been played.</p>') +
+          (active && locked && publicData.phase !== "finished"
+            ? '<p class="ca-hand-note">Waiting for the other active players.</p>' : "") +
+          lockButton +
+        '</section>' +
+        tieBreaker +
       '</div>' +
-      (publicData.phase === "finished" && winnerNotice ? '<p class="ca-hand-note">' + escapeHTML(winnerNotice) + '</p>' : "") +
-      finalPanel +
-      '<h3>Scores</h3><div class="ca-scoreboard">' + renderScoreboard(publicData) + '</div>' +
-      reveal +
-      tieBreaker +
-      (publicData.phase !== "finished" ? '<section><h3>' + handLabel + '</h3>' +
-        (canShowCards
-          ? '<div class="ca-hand" style="--player-color:' + escapeAttribute(myPlayer.color) + '">' + cardButtons + '</div>'
-          : '<p class="ca-hand-note">Your private hand is loading…</p>') +
-        (active && locked ? '<p class="ca-hand-note">Locked in. Waiting for the other active players.</p>' : "") +
-        lockButton + '</section>'
-        : "") +
-      '<section class="ca-log"><strong>Recent results</strong><ul>' +
+      (publicData.phase === "finished" ? renderFinalResults(publicData) : "") +
+      '<section class="ca-log"><strong>Recent rounds</strong><ul>' +
         (recentLog || "<li>The auction is ready to begin.</li>") + '</ul></section>' +
       '</div>';
   }
 
   function afterRender(container, context) {
     currentContext = context;
+    if (activeRevealUntil > Date.now() && !revealTimer) {
+      revealTimer = setTimeout(function () {
+        revealTimer = null;
+        if (currentContext) currentContext.render();
+      }, activeRevealUntil - Date.now());
+    }
     container.querySelectorAll("[data-card]").forEach(function (button) {
       button.addEventListener("click", function () {
         if (button.disabled || locallyLocked) return;
@@ -684,6 +726,13 @@
       resultReported = false;
       selectedCard = null;
       locallyLocked = false;
+      recentlyUsedCard = null;
+      activeRevealKey = null;
+      activeRevealUntil = 0;
+      if (removalTimer) clearTimeout(removalTimer);
+      if (revealTimer) clearTimeout(revealTimer);
+      removalTimer = null;
+      revealTimer = null;
 
       players.forEach(function (player) {
         privateByPlayer[player.id] = {
@@ -702,9 +751,12 @@
       if (!context.isHost) state = publicData;
       currentContext = context;
       playerId = context.playerId;
-      myPrivateState = privateState || null;
+      myPrivateState = null;
+      if (privateState) updateMyPrivateState(privateState);
       selectedCard = null;
       locallyLocked = false;
+      activeRevealKey = null;
+      activeRevealUntil = 0;
       resultReported = publicData.phase === "finished";
     },
     receiveState: function (publicData) {
@@ -718,7 +770,7 @@
         myPrivateState.used.length !== privateState.used.length;
       const betWasCleared = myPrivateState && myPrivateState.lockedCard !== null &&
         privateState && privateState.lockedCard === null;
-      myPrivateState = privateState;
+      updateMyPrivateState(privateState);
       locallyLocked = Boolean(privateState && privateState.lockedCard !== null);
       if (handWasChanged || betWasCleared) selectedCard = null;
     },

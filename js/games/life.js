@@ -4,7 +4,9 @@
 
   const GAME_ID = "life-path";
   const DATA = window.LifePathData;
-  const SPIN_TIME = 2500;
+  const SPIN_TIME = 2800;
+  const SPIN_RESULT_TIME = 800;
+  const SPIN_FADE_TIME = 400;
   const HOP_TIME = 250;
   const EFFECT_TIME = 750;
 
@@ -17,6 +19,12 @@
   let locallyActed = false;
   let resultsCounted = false;
   let floatTimer = null;
+  let boardGeometry = null;
+  let sceneryMarkup = null;
+  let legendOpen = false;
+  let camera = { x: 0, y: 0, zoom: 1, autoFollowUntil: 0, followKey: null };
+  let cameraResumeTimer = null;
+  let keyHandler = null;
 
   function escapeHTML(value) {
     return String(value).replace(/[&<>"']/g, function (character) {
@@ -142,7 +150,7 @@
   function statsItems(changes) {
     const items = [];
     if (changes.cash) {
-      items.push({ text: (changes.cash > 0 ? "+" : "") + changes.cash + "K", kind: changes.cash > 0 ? "good" : "cost" });
+      items.push({ text: (changes.cash > 0 ? "+" : "") + changes.cash + "k", kind: changes.cash > 0 ? "good" : "cost" });
     }
     if (changes.wealth) {
       items.push({ text: (changes.wealth > 0 ? "+" : "") + changes.wealth + " 🐷", kind: "token" });
@@ -322,8 +330,7 @@
       if (!destination) break;
       path.push(destination);
       cursor = destination;
-      if (destination.type === "career-check" || destination.type === "midlife" ||
-          destination.type === "retirement" || destination.type === "graduation") {
+      if (DATA.stopTypes.indexOf(destination.type) !== -1) {
         break;
       }
     }
@@ -356,50 +363,57 @@
       return;
     }
     if (space.type === "milestone") {
+      makeChoice("milestone", "A little life milestone", [
+        { id: "happy", label: "+2 Happiness", detail: "Gain two ❤️ tokens." },
+        { id: "knowledge-cash", label: "+1 Knowledge and +10K", detail: "Gain one 📖 token and 10K." }
+      ], "next-turn");
+      return;
+    }
+    if (space.type === "marriage") {
       const options = [];
       if (!player.married) {
         options.push({
           id: "marry",
           label: "Get married",
-          detail: "+" + DATA.rules.marriageHappiness + " ❤️; each other player pays you " +
+          detail: "+" + DATA.rules.marriageHappiness + " ❤️; every other connected player gives you " +
             DATA.rules.marriagePayment + "K."
         });
       }
-      if (player.babies < DATA.rules.maximumChildren) {
-        options.push({
-          id: "baby",
-          label: "Have a baby or adopt a pet",
-          detail: "-" + DATA.rules.babyCost + "K, +" + DATA.rules.babyHappiness +
-            " ❤️, +" + DATA.rules.babyKnowledge + " 📖."
-        });
-      }
-      options.push({ id: "pass", label: "Pass this time", detail: "Keep your plans as they are." });
-      makeChoice("milestone", "A little life milestone", options, "next-turn");
+      options.push({
+        id: "stay-single",
+        label: "Stay single",
+        detail: "+" + DATA.rules.marriageStayKnowledge + " 📖 and +" +
+          DATA.rules.marriageStayWealth + " 🐷."
+      });
+      makeChoice("marriage", "A wedding or your own path?", options, "bonus-spin");
       return;
     }
-    if (space.type === "career-check") {
-      makeChoice("career-check", "Career Check", [
-        { id: "keep", label: "Keep your job", detail: "Get a " + DATA.rules.careerCheckRaise + "K salary raise." },
-        { id: "switch", label: "Try a new career", detail: "Choose one of " +
-          DATA.rules.careerSwitchChoices + " careers in the same field." }
+    if (space.type === "family") {
+      makeChoice("family", "A new chapter", [
+        { id: "family", label: "Start a family or adopt a pet", detail: "-" +
+          DATA.rules.familyCost + "K, +" + DATA.rules.familyHappiness + " ❤️, +" +
+          DATA.rules.familyKnowledge + " 📖." },
+        { id: "adventure", label: "Keep adventuring", detail: "+" +
+          DATA.rules.familyStayWealth + " 🐷 and +" + DATA.rules.familyStayCash + "K." }
       ], "bonus-spin");
       return;
     }
-    if (space.type === "midlife") {
-      makeChoice("midlife", "Mid-life moment", [
-        { id: "promotion", label: "Take a promotion", detail: "+" + DATA.rules.midlifePromotion + "K salary." },
-        { id: "sabbatical", label: "Take a sabbatical", detail: "-" + DATA.rules.sabbaticalCost +
-          "K, +" + DATA.rules.sabbaticalHappiness + " ❤️, +" + DATA.rules.sabbaticalKnowledge + " 📖." },
-        { id: "invest", label: "Invest in a cozy idea", detail: "-" + DATA.rules.investmentCost +
-          "K, +" + DATA.rules.investmentWealth + " 🐷." }
+    if (space.type === "second-chance") {
+      makeChoice("second-chance", "A second chance", [
+        { id: "raise", label: "Take a raise", detail: "+" + DATA.rules.secondChanceRaise + "K salary." },
+        { id: "switch", label: "Switch careers", detail: "Choose a new career from the same field." },
+        { id: "sabbatical", label: "Take a sabbatical", detail: "-" +
+          DATA.rules.sabbaticalCost + "K, +" + DATA.rules.sabbaticalHappiness +
+          " ❤️, +" + DATA.rules.sabbaticalKnowledge + " 📖." }
       ], "bonus-spin");
     }
   }
 
   function resolveLanding(player, space, version) {
     if (!space || version !== turnVersion || !isCurrentTurn(player.id)) return;
-    if (space.type === "career-check" || space.type === "midlife" ||
-        space.type === "event" || space.type === "milestone") {
+    if (space.type === "event" || space.type === "milestone" ||
+        space.type === "marriage" || space.type === "family" ||
+        space.type === "second-chance") {
       createLandingChoice(player, space);
       publish();
       return;
@@ -415,12 +429,28 @@
       beginSpin(player.id, "lucky");
       return;
     }
-    if (space.type === "quiet") {
-      player.tokens.happiness += DATA.rules.quietHappiness;
+    if (space.type === "opportunity") {
+      const cash = player.career && player.career.kind === "degree" ? 30 : 20;
+      player.cash += cash;
       state.phase = "resolving";
-      setStatsAnimation([{ playerId: player.id, items: statsItems({ happiness: DATA.rules.quietHappiness }) }]);
+      setStatsAnimation([{ playerId: player.id, items: statsItems({ cash: cash }) }]);
       publish();
       scheduleTurnAdvance(version, EFFECT_TIME);
+      return;
+    }
+    if (space.type === "setback") {
+      player.cash -= 20;
+      state.phase = "resolving";
+      setStatsAnimation([{ playerId: player.id, items: statsItems({ cash: -20 }) }]);
+      publish();
+      scheduleTurnAdvance(version, EFFECT_TIME);
+      return;
+    }
+    if (space.type === "boost") {
+      state.phase = "moving";
+      state.animation = null;
+      publish();
+      movePlayer(player, DATA.rules.boostSpaces, version);
       return;
     }
     state.phase = "resolving";
@@ -486,8 +516,7 @@
       publish();
       await wait(HOP_TIME);
       if (version !== turnVersion || !isCurrentTurn(player.id)) return;
-      if (destination.type === "career-check" || destination.type === "midlife" ||
-          destination.type === "retirement") {
+      if (DATA.stopTypes.indexOf(destination.type) !== -1) {
         resolveLanding(player, destination, version);
         return;
       }
@@ -495,13 +524,8 @@
     resolveLanding(player, path[path.length - 1], version);
   }
 
-  function randomSpin() {
-    return DATA.spinNumbers[Math.floor(Math.random() * DATA.spinNumbers.length)];
-  }
-
-  function wheelRotation(number) {
-    const index = DATA.spinNumbers.indexOf(number);
-    const segmentCenter = -90 + (index + 0.5) * (360 / DATA.spinNumbers.length);
+  function wheelRotation(index, segmentCount) {
+    const segmentCenter = -90 + (index + 0.5) * (360 / segmentCount);
     const finalTurn = ((-90 - segmentCenter) % 360 + 360) % 360;
     return 360 * 5 + finalTurn;
   }
@@ -513,7 +537,9 @@
       : state && state.phase === "awaiting-spin";
     if (!state || !isCurrentTurn(playerId) || !correctPhase) return;
     const version = turnVersion;
-    const number = randomSpin();
+    const segmentCount = kind === "lucky" ? DATA.luckySpinResults.length : DATA.spinNumbers.length;
+    const resultIndex = Math.floor(Math.random() * segmentCount);
+    const number = kind === "lucky" ? null : DATA.spinNumbers[resultIndex];
     state.phase = "spinning";
     state.bonusSpin = false;
     state.pendingDecision = null;
@@ -521,7 +547,8 @@
       id: ++animationId,
       kind: kind,
       number: number,
-      rotation: wheelRotation(number)
+      resultIndex: resultIndex,
+      rotation: wheelRotation(resultIndex, segmentCount)
     };
     state.animation = null;
     locallyActed = false;
@@ -530,10 +557,17 @@
     if (version !== turnVersion || !isCurrentTurn(playerId)) return;
 
     const player = findPlayer(playerId);
+    state.phase = "spin-result";
+    publish();
+    await wait(SPIN_RESULT_TIME);
+    if (version !== turnVersion || !isCurrentTurn(playerId)) return;
+    state.phase = "spin-fading";
+    publish();
+    await wait(SPIN_FADE_TIME);
+    if (version !== turnVersion || !isCurrentTurn(playerId)) return;
+
     if (kind === "lucky") {
-      const result = DATA.luckySpinResults.find(function (entry) {
-        return number >= entry.min && number <= entry.max;
-      });
+      const result = DATA.luckySpinResults[resultIndex];
       const items = applyEffects(player, result.effects);
       state.phase = "resolving";
       state.currentSpin = null;
@@ -551,16 +585,26 @@
     }).sort(function (first, second) {
       return Number(first.id.slice(1)) - Number(second.id.slice(1));
     });
-    for (let index = 0; index < branch.length; index += 1) {
+    const entrySteps = [];
+    for (let index = 1; index <= DATA.collegeEntryIndex; index += 1) {
+      entrySteps.push(DATA.spaces.find(function (space) {
+        return space.id === "m" + index;
+      }));
+    }
+    const route = entrySteps.concat(branch);
+    for (let index = 0; index < route.length; index += 1) {
       if (version !== turnVersion || !isCurrentTurn(player.id)) return;
       const previousPosition = player.position;
-      const space = branch[index];
+      const space = route[index];
       player.position = space.id;
-      let knowledge = DATA.collegeKnowledgePerSpace;
-      player.tokens.knowledge += knowledge;
+      let knowledge = 0;
+      if (space.type === "college") {
+        knowledge = DATA.collegeKnowledgePerSpace;
+        player.tokens.knowledge += knowledge;
+      }
       if (space.type === "graduation") {
-        knowledge += DATA.collegeGraduationBonus;
-        player.tokens.knowledge += DATA.collegeGraduationBonus;
+        knowledge = DATA.collegeGraduationBonus;
+        player.tokens.knowledge += knowledge;
       }
       state.phase = "moving";
       state.animation = {
@@ -569,7 +613,9 @@
         playerId: player.id,
         from: previousPosition,
         to: space.id,
-        entries: [{ playerId: player.id, items: statsItems({ knowledge: knowledge }) }]
+        entries: knowledge
+          ? [{ playerId: player.id, items: statsItems({ knowledge: knowledge }) }]
+          : []
       };
       publish();
       await wait(HOP_TIME);
@@ -613,7 +659,7 @@
       setTimeout(function () {
         if (version !== turnVersion || !isCurrentTurn(player.id)) return;
         state.phase = "awaiting-spin";
-        state.bonusSpin = false;
+        state.bonusSpin = true;
         state.animation = null;
         locallyActed = false;
         publish();
@@ -665,30 +711,52 @@
     if (decision.kind === "event") {
       entries.push({ playerId: player.id, items: applyEffects(player, option.effects) });
     } else if (decision.kind === "milestone") {
+      const effects = id === "happy"
+        ? { happiness: 2 }
+        : { cash: 10, knowledge: 1 };
+      entries.push({ playerId: player.id, items: applyEffects(player, effects) });
+    } else if (decision.kind === "marriage") {
       if (id === "marry" && !player.married) {
         player.married = true;
-        player.tokens.happiness += DATA.rules.marriageHappiness;
-        entries.push({ playerId: player.id, items: statsItems({ happiness: DATA.rules.marriageHappiness }) });
+        const gifts = state.players.filter(function (otherPlayer) {
+          return otherPlayer.id !== player.id && !otherPlayer.isLeft;
+        }).length * DATA.rules.marriagePayment;
+        entries.push({ playerId: player.id, items: applyEffects(player, {
+          cash: gifts,
+          happiness: DATA.rules.marriageHappiness
+        }) });
         state.players.forEach(function (otherPlayer) {
-          if (otherPlayer.id === player.id) return;
+          if (otherPlayer.id === player.id || otherPlayer.isLeft) return;
           otherPlayer.cash -= DATA.rules.marriagePayment;
           entries.push({ playerId: otherPlayer.id, items: statsItems({ cash: -DATA.rules.marriagePayment }) });
         });
-      } else if (id === "baby" && player.babies < DATA.rules.maximumChildren) {
-        player.babies += 1;
+      } else {
         entries.push({ playerId: player.id, items: applyEffects(player, {
-          cash: -DATA.rules.babyCost,
-          happiness: DATA.rules.babyHappiness,
-          knowledge: DATA.rules.babyKnowledge
+          knowledge: DATA.rules.marriageStayKnowledge,
+          wealth: DATA.rules.marriageStayWealth
         }) });
       }
-    } else if (decision.kind === "career-check") {
-      if (id === "keep") {
-        player.salary += DATA.rules.careerCheckRaise;
-        entries.push({ playerId: player.id, items: statsItems({ salary: DATA.rules.careerCheckRaise }) });
+      setBonusSpin(entries);
+      return;
+    } else if (decision.kind === "family") {
+      const effects = id === "family"
+        ? {
+          cash: -DATA.rules.familyCost,
+          happiness: DATA.rules.familyHappiness,
+          knowledge: DATA.rules.familyKnowledge
+        }
+        : { cash: DATA.rules.familyStayCash, wealth: DATA.rules.familyStayWealth };
+      entries.push({ playerId: player.id, items: applyEffects(player, effects) });
+      setBonusSpin(entries);
+      return;
+    } else if (decision.kind === "second-chance") {
+      if (id === "raise") {
+        player.salary += DATA.rules.secondChanceRaise;
+        entries.push({ playerId: player.id, items: statsItems({ salary: DATA.rules.secondChanceRaise }) });
         setBonusSpin(entries);
         return;
       }
+      if (id === "switch") {
       const availableCareers = DATA.careers.filter(function (career) {
         return career.kind === player.career.kind && career.id !== player.career.id;
       });
@@ -696,22 +764,12 @@
       makeChoice("career-pick", "Choose a new career.", careerOptions(careers, "career"), "career-switch");
       publish();
       return;
-    } else if (decision.kind === "midlife") {
-      if (id === "promotion") {
-        player.salary += DATA.rules.midlifePromotion;
-        entries.push({ playerId: player.id, items: statsItems({ salary: DATA.rules.midlifePromotion }) });
-      } else if (id === "sabbatical") {
-        entries.push({ playerId: player.id, items: applyEffects(player, {
-          cash: -DATA.rules.sabbaticalCost,
-          happiness: DATA.rules.sabbaticalHappiness,
-          knowledge: DATA.rules.sabbaticalKnowledge
-        }) });
-      } else if (id === "invest") {
-        entries.push({ playerId: player.id, items: applyEffects(player, {
-          cash: -DATA.rules.investmentCost,
-          wealth: DATA.rules.investmentWealth
-        }) });
       }
+      entries.push({ playerId: player.id, items: applyEffects(player, {
+        cash: -DATA.rules.sabbaticalCost,
+        happiness: DATA.rules.sabbaticalHappiness,
+        knowledge: DATA.rules.sabbaticalKnowledge
+      }) });
       setBonusSpin(entries);
       return;
     }
@@ -721,90 +779,412 @@
     scheduleTurnAdvance(turnVersion, EFFECT_TIME);
   }
 
-  function renderWheel(spin) {
-    const center = 100;
-    const radius = 94;
-    const segmentAngle = 360 / DATA.spinNumbers.length;
-    const slices = DATA.spinNumbers.map(function (number, index) {
-      const startAngle = (-90 + index * segmentAngle) * Math.PI / 180;
-      const endAngle = (-90 + (index + 1) * segmentAngle) * Math.PI / 180;
-      const midAngle = (startAngle + endAngle) / 2;
-      const x1 = center + Math.cos(startAngle) * radius;
-      const y1 = center + Math.sin(startAngle) * radius;
-      const x2 = center + Math.cos(endAngle) * radius;
-      const y2 = center + Math.sin(endAngle) * radius;
-      const labelX = center + Math.cos(midAngle) * 62;
-      const labelY = center + Math.sin(midAngle) * 62;
-      return '<path d="M ' + center + ' ' + center + ' L ' + x1.toFixed(2) + ' ' +
-        y1.toFixed(2) + ' A ' + radius + ' ' + radius + ' 0 0 1 ' +
-        x2.toFixed(2) + ' ' + y2.toFixed(2) + ' Z" fill="' +
-        escapeHTML(DATA.wheelColors[index % DATA.wheelColors.length]) +
-        '" stroke="#fff9e9" stroke-width="2"></path><text x="' +
-        labelX.toFixed(2) + '" y="' + labelY.toFixed(2) +
-        '" text-anchor="middle" dominant-baseline="middle">' + number + '</text>';
-    }).join("");
-    return '<div class="life-wheel-shell"><span class="life-wheel-pointer">▼</span>' +
-      '<svg class="life-wheel-svg is-spinning" style="--wheel-turn:' + spin.rotation +
-      'deg" viewBox="0 0 200 200" role="img" aria-label="Wheel landing on ' +
-      spin.number + '">' + slices + '<circle cx="100" cy="100" r="13" fill="#fffaf0" stroke="#718c70" stroke-width="3"></circle></svg>' +
-      '<p>' + (spin.kind === "lucky" ? "Lucky Spin" : "The wheel is spinning…") +
-      '<strong> ' + spin.number + '</strong></p></div>';
+  function catmullRomPath(points) {
+    if (points.length < 2) return "";
+    let path = "M " + points[0][0] + " " + points[0][1];
+    for (let index = 0; index < points.length - 1; index += 1) {
+      const previous = points[Math.max(0, index - 1)];
+      const start = points[index];
+      const end = points[index + 1];
+      const next = points[Math.min(points.length - 1, index + 2)];
+      const firstControl = [
+        start[0] + (end[0] - previous[0]) / 6,
+        start[1] + (end[1] - previous[1]) / 6
+      ];
+      const secondControl = [
+        end[0] - (next[0] - start[0]) / 6,
+        end[1] - (next[1] - start[1]) / 6
+      ];
+      path += " C " + firstControl[0].toFixed(2) + " " + firstControl[1].toFixed(2) +
+        " " + secondControl[0].toFixed(2) + " " + secondControl[1].toFixed(2) +
+        " " + end[0] + " " + end[1];
+    }
+    return path;
   }
 
-  function renderBoard() {
-    const byId = Object.create(null);
-    DATA.spaces.forEach(function (space) {
-      byId[space.id] = space;
+  function pointAt(path, distance) {
+    const point = path.getPointAtLength(distance);
+    return { x: point.x, y: point.y };
+  }
+
+  function segmentsCross(firstStart, firstEnd, secondStart, secondEnd) {
+    function direction(start, end, point) {
+      return (end.x - start.x) * (point.y - start.y) -
+        (end.y - start.y) * (point.x - start.x);
+    }
+    return direction(firstStart, firstEnd, secondStart) *
+      direction(firstStart, firstEnd, secondEnd) < 0 &&
+      direction(secondStart, secondEnd, firstStart) *
+      direction(secondStart, secondEnd, firstEnd) < 0;
+  }
+
+  function sampledSegments(path) {
+    const length = path.getTotalLength();
+    const count = Math.ceil(length / 18);
+    const points = [];
+    for (let index = 0; index <= count; index += 1) {
+      points.push(pointAt(path, length * index / count));
+    }
+    return points.slice(1).map(function (point, index) {
+      return { start: points[index], end: point };
     });
-    const paths = [];
-    DATA.spaces.forEach(function (space) {
-      const destinations = Array.isArray(space.next) ? space.next : [space.next];
-      destinations.filter(Boolean).forEach(function (id) {
-        const destination = byId[id];
-        if (destination) {
-          paths.push('<line x1="' + space.x + '" y1="' + space.y + '" x2="' +
-            destination.x + '" y2="' + destination.y + '" class="life-track-line"></line>');
+  }
+
+  function checkBoardSpacing(mainPath, collegePath) {
+    const mainSpaces = DATA.spaces.filter(function (space) {
+      return space.id.charAt(0) === "m";
+    });
+    for (let first = 0; first < mainSpaces.length; first += 1) {
+      for (let second = first + 2; second < mainSpaces.length; second += 1) {
+        const dx = mainSpaces[first].x - mainSpaces[second].x;
+        const dy = mainSpaces[first].y - mainSpaces[second].y;
+        if (Math.sqrt(dx * dx + dy * dy) < 45) {
+          console.warn("Life Path tiles " + first + " and " + second + " are too close.");
+        }
+      }
+    }
+    const branchSpaces = DATA.spaces.filter(function (space) {
+      return space.id.charAt(0) === "c";
+    });
+    for (let first = 0; first < branchSpaces.length; first += 1) {
+      for (let second = first + 2; second < branchSpaces.length; second += 1) {
+        const dx = branchSpaces[first].x - branchSpaces[second].x;
+        const dy = branchSpaces[first].y - branchSpaces[second].y;
+        if (Math.sqrt(dx * dx + dy * dy) < 45) {
+          console.warn("Life Path college tiles " + (first + 1) + " and " + (second + 1) + " are too close.");
+        }
+      }
+    }
+    branchSpaces.forEach(function (branchSpace, branchIndex) {
+      mainSpaces.forEach(function (mainSpace, mainIndex) {
+        if (mainIndex >= DATA.collegeEntryIndex - 1 && mainIndex <= DATA.collegeEntryIndex + 1) return;
+        if (mainIndex >= DATA.collegeMergeIndex - 1 && mainIndex <= DATA.collegeMergeIndex + 1) return;
+        const dx = branchSpace.x - mainSpace.x;
+        const dy = branchSpace.y - mainSpace.y;
+        if (Math.sqrt(dx * dx + dy * dy) < 45) {
+          console.warn("Life Path college tile " + branchIndex + " is too close to main tile " + mainIndex + ".");
         }
       });
     });
+    const mainSegments = sampledSegments(mainPath);
+    const branchSegments = sampledSegments(collegePath);
+    for (let first = 0; first < mainSegments.length; first += 1) {
+      for (let second = first + 2; second < mainSegments.length; second += 1) {
+        if (segmentsCross(mainSegments[first].start, mainSegments[first].end,
+          mainSegments[second].start, mainSegments[second].end)) {
+          console.warn("The Life Path main track crosses itself.");
+          return;
+        }
+      }
+    }
+    for (let first = 0; first < branchSegments.length; first += 1) {
+      if (first < 4 || first > branchSegments.length - 5) continue;
+      for (let second = first + 2; second < branchSegments.length; second += 1) {
+        if (segmentsCross(branchSegments[first].start, branchSegments[first].end,
+          branchSegments[second].start, branchSegments[second].end)) {
+          console.warn("The Life Path college branch crosses itself.");
+          return;
+        }
+      }
+      for (let mainIndex = 0; mainIndex < mainSegments.length; mainIndex += 1) {
+        const fraction = (mainIndex + 0.5) / mainSegments.length;
+        const nearJoin = Math.abs(fraction - DATA.collegeEntryIndex / (DATA.tileCodes.length - 1)) < 0.06 ||
+          Math.abs(fraction - DATA.collegeMergeIndex / (DATA.tileCodes.length - 1)) < 0.06;
+        if (nearJoin) continue;
+        if (segmentsCross(branchSegments[first].start, branchSegments[first].end,
+          mainSegments[mainIndex].start, mainSegments[mainIndex].end)) {
+          console.warn("The Life Path college branch crosses the main track.");
+          return;
+        }
+      }
+    }
+  }
 
-    const tiles = DATA.spaces.map(function (space) {
-      const type = DATA.spaceTypes[space.type];
-      const label = space.type === "career-check" ? "Career Check" : type.label;
-      return '<g class="life-tile" transform="translate(' + space.x + ' ' + space.y + ')">' +
-        '<rect x="-34" y="-24" width="68" height="48" rx="13" fill="' +
-        escapeHTML(type.color) + '" stroke="#fffaf0" stroke-width="2"></rect>' +
-        '<text x="0" y="-3" text-anchor="middle" class="life-tile-emoji">' +
-        escapeHTML(type.emoji) + '</text><text x="0" y="15" text-anchor="middle" class="life-tile-label">' +
-        escapeHTML(label) + '</text></g>';
-    }).join("");
+  function measureBoardGeometry(container) {
+    if (boardGeometry) return false;
+    const mainPath = container.querySelector("[data-main-track]");
+    const collegePath = container.querySelector("[data-college-track]");
+    if (!mainPath || !collegePath || !mainPath.getTotalLength) return false;
+    const mainLength = mainPath.getTotalLength();
+    const mainSpaces = DATA.spaces.filter(function (space) {
+      return space.id.charAt(0) === "m";
+    });
+    mainSpaces.forEach(function (space, index) {
+      const distance = mainLength * index / (mainSpaces.length - 1);
+      const before = pointAt(mainPath, Math.max(0, distance - 1));
+      const after = pointAt(mainPath, Math.min(mainLength, distance + 1));
+      const point = pointAt(mainPath, distance);
+      space.x = point.x;
+      space.y = point.y;
+      space.angle = Math.atan2(after.y - before.y, after.x - before.x) * 180 / Math.PI;
+    });
 
-    const tokens = state.players.map(function (player) {
-      const space = byId[player.position];
-      if (!space) return "";
-      const sameSpace = state.players.filter(function (other) {
-        return other.position === player.position;
-      });
-      const tokenIndex = sameSpace.indexOf(player);
-      const offsetX = (tokenIndex - (sameSpace.length - 1) / 2) * 13;
-      const offsetY = Math.floor(tokenIndex / 3) * 9;
-      const isActive = player.id === state.currentPlayerId && !player.isLeft && !player.retired;
-      const isMoving = state.animation && state.animation.type === "hop" &&
-        state.animation.playerId === player.id;
-      return '<g class="life-token' + (isActive ? " is-active" : "") +
-        (isMoving ? " is-moving" : "") +
-        (player.isLeft ? " is-left" : "") + '" transform="translate(' +
-        (space.x + offsetX) + ' ' + (space.y + 8 + offsetY) + ')">' +
-        '<circle class="life-token-halo" r="14" fill="' + escapeHTML(player.color) + '"></circle>' +
-        '<path d="M-12 3 L-9 -4 L-4 -8 L5 -8 L10 -3 L13 3 Z" fill="' +
-        escapeHTML(player.color) + '" stroke="#fffaf0" stroke-width="1.5"></path>' +
-        '<path d="M-5 -5 L-3 -8 L4 -8 L7 -4 Z" fill="#fffaf0" opacity=".8"></path>' +
-        '<circle cx="-7" cy="4" r="2.2" fill="#405347"></circle><circle cx="8" cy="4" r="2.2" fill="#405347"></circle>' +
-        '<text x="0" y="18" text-anchor="middle" class="life-token-label">' +
-        escapeHTML(player.name) + '</text></g>';
-    }).join("");
-    return '<div class="life-board-scroll"><svg class="life-board-svg" viewBox="0 0 840 540" role="img" aria-label="Life Path winding game board">' +
-      '<g>' + paths.join("") + '</g><g>' + tiles + '</g><g>' + tokens + '</g></svg></div>';
+    const entry = mainSpaces[DATA.collegeEntryIndex];
+    const merge = mainSpaces[DATA.collegeMergeIndex];
+    const collegeD = catmullRomPath([[entry.x, entry.y]].concat(DATA.collegeWaypoints, [[merge.x, merge.y]]));
+    collegePath.setAttribute("d", collegeD);
+    const collegeLength = collegePath.getTotalLength();
+    const branchSpaces = DATA.spaces.filter(function (space) {
+      return space.id.charAt(0) === "c";
+    });
+    branchSpaces.forEach(function (space, index) {
+      const distance = collegeLength * (index + 1) / (branchSpaces.length + 1);
+      const before = pointAt(collegePath, Math.max(0, distance - 1));
+      const after = pointAt(collegePath, Math.min(collegeLength, distance + 1));
+      const point = pointAt(collegePath, distance);
+      space.x = point.x;
+      space.y = point.y;
+      space.angle = Math.atan2(after.y - before.y, after.x - before.x) * 180 / Math.PI;
+    });
+
+    boardGeometry = {
+      mainPath: catmullRomPath(DATA.mainWaypoints),
+      collegePath: collegeD
+    };
+    checkBoardSpacing(mainPath, collegePath);
+    sceneryMarkup = makeScenery();
+    return true;
+  }
+
+  function seededRandom() {
+    let seed = DATA.scenerySeed >>> 0;
+    return function () {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 4294967296;
+    };
+  }
+
+  function makePropMarkup(prop) {
+    const x = prop.x;
+    const y = prop.y;
+    if (prop.type === "tree-round") {
+      return '<g transform="translate(' + x + ' ' + y + ')"><path d="M-4 19 L-2 0 L6 0 L8 19Z" fill="#a87555"/>' +
+        '<circle cx="0" cy="-7" r="18" fill="#76a97e"/><circle cx="-12" cy="0" r="12" fill="#8cbd8e"/>' +
+        '<circle cx="12" cy="0" r="12" fill="#689b73"/></g>';
+    }
+    if (prop.type === "tree-pointed") {
+      return '<g transform="translate(' + x + ' ' + y + ')"><path d="M-3 19 L-1 0 L5 0 L7 19Z" fill="#a87555"/>' +
+        '<path d="M0-29 L-20 1 L-9 1 L-24 16 L22 16 L8 1 L19 1Z" fill="#6c9d73" stroke="#8ebd8b" stroke-width="2"/></g>';
+    }
+    if (prop.type === "house") {
+      return '<g transform="translate(' + x + ' ' + y + ')"><rect x="-18" y="-3" width="36" height="26" rx="4" fill="#fff3d4" stroke="#b37c68" stroke-width="2"/>' +
+        '<path d="M-23-3 L0-22 L23-3Z" fill="#d98978" stroke="#b37c68" stroke-width="2"/>' +
+        '<rect x="-5" y="7" width="10" height="16" rx="4" fill="#8baf91"/><rect x="-14" y="2" width="7" height="7" fill="#a9d8e6"/><rect x="7" y="2" width="7" height="7" fill="#a9d8e6"/></g>';
+    }
+    if (prop.type === "flowers") {
+      return '<g transform="translate(' + x + ' ' + y + ')"><path d="M-20 8 Q0-3 21 9" fill="none" stroke="#6c9d73" stroke-width="3"/>' +
+        '<circle cx="-11" cy="1" r="4" fill="#f3a5bf"/><circle cx="0" cy="-2" r="4" fill="#f5d365"/>' +
+        '<circle cx="11" cy="2" r="4" fill="#c6a9e8"/><circle cx="-11" cy="1" r="1.5" fill="#fff8e9"/>' +
+        '<circle cx="0" cy="-2" r="1.5" fill="#fff8e9"/><circle cx="11" cy="2" r="1.5" fill="#fff8e9"/></g>';
+    }
+    if (prop.type === "pond") {
+      return '<g transform="translate(' + x + ' ' + y + ')"><ellipse rx="48" ry="25" fill="#9dd8df" stroke="#fff9e9" stroke-width="4"/>' +
+        '<path d="M-27-4 Q-10-13 9-5 M-12 9 Q7 1 27 8" fill="none" stroke="#d8f3ec" stroke-width="3" stroke-linecap="round"/>' +
+        '<ellipse cx="22" cy="-5" rx="7" ry="4" fill="#7ba988"/></g>';
+    }
+    if (prop.type === "windmill") {
+      return '<g transform="translate(' + x + ' ' + y + ')"><path d="M-13 22 L-8-12 L8-12 L13 22Z" fill="#fff1d2" stroke="#b17f66" stroke-width="2"/>' +
+        '<path d="M-17-12 L0-27 L17-12Z" fill="#d98978" stroke="#b17f66" stroke-width="2"/>' +
+        '<circle r="4" fill="#8baf91"/><path d="M0-27V-4 M-18-12L-3-3 M18-12L3-3 M0 12L0 2" stroke="#8baf91" stroke-width="3" stroke-linecap="round"/></g>';
+    }
+    return '<g transform="translate(' + x + ' ' + y + ')"><ellipse cx="-5" cy="3" rx="13" ry="9" fill="#a9aba0"/>' +
+      '<ellipse cx="7" cy="0" rx="12" ry="8" fill="#c2c2b5"/><path d="M-9-1Q-3-10 3-2" fill="none" stroke="#e9e9dc" stroke-width="2"/></g>';
+  }
+
+  function makeScenery() {
+    const random = seededRandom();
+    const placed = [];
+    const occupied = DATA.spaces.map(function (space) {
+      return { x: space.x, y: space.y, radius: 65 };
+    });
+    function place(type, count) {
+      for (let item = 0; item < count; item += 1) {
+        for (let attempt = 0; attempt < 1600; attempt += 1) {
+          const prop = {
+            type: type,
+            x: 85 + random() * 1430,
+            y: 75 + random() * 850
+          };
+          if (prop.y > 350 && prop.y < 465) continue;
+          const tooClose = occupied.some(function (other) {
+            const dx = prop.x - other.x;
+            const dy = prop.y - other.y;
+            return Math.sqrt(dx * dx + dy * dy) < Math.max(48, other.radius);
+          });
+          if (tooClose) continue;
+          placed.push(prop);
+          occupied.push({ x: prop.x, y: prop.y, radius: 43 });
+          break;
+        }
+      }
+    }
+    place("tree-round", Math.ceil(DATA.scenery.treeCount / 2));
+    place("tree-pointed", Math.floor(DATA.scenery.treeCount / 2));
+    place("house", DATA.scenery.houseCount);
+    place("flowers", DATA.scenery.flowerCount);
+    place("rock", DATA.scenery.rockCount);
+    place("pond", DATA.scenery.pondCount);
+    place("windmill", DATA.scenery.windmillCount);
+    return placed.map(makePropMarkup).join("");
+  }
+
+  function renderLandmark(space) {
+    const angle = (space.angle + 90) * Math.PI / 180;
+    const x = space.x + Math.cos(angle) * 102;
+    const y = space.y + Math.sin(angle) * 102;
+    if (space.type === "marriage") {
+      return '<g class="life-landmark" transform="translate(' + x + ' ' + y + ')"><path d="M-31 22V-4Q0-45 31-4V22" fill="none" stroke="#bd8193" stroke-width="8" stroke-linecap="round"/>' +
+        '<circle cx="-23" cy="-14" r="6" fill="#f4a6c6"/><circle cx="0" cy="-36" r="6" fill="#f6d365"/><circle cx="23" cy="-14" r="6" fill="#f4a6c6"/>' +
+        '<text x="0" y="42" text-anchor="middle" class="life-landmark-label">WEDDING ARCH</text></g>';
+    }
+    if (space.type === "family" || space.type === "retirement") {
+      const cabin = space.type === "retirement";
+      return '<g class="life-landmark" transform="translate(' + x + ' ' + y + ')"><rect x="-28" y="-7" width="56" height="39" rx="5" fill="' +
+        (cabin ? "#dfc19a" : "#fff0ce") + '" stroke="#9e765b" stroke-width="3"/><path d="M-35-7L0-35L35-7Z" fill="' +
+        (cabin ? "#a9755d" : "#d98978") + '" stroke="#9e765b" stroke-width="3"/><rect x="-7" y="7" width="14" height="25" rx="5" fill="#8eaa8b"/>' +
+        (cabin ? '<path d="M-48-25H-17" stroke="#9a6e57" stroke-width="3"/><path d="M-48-25L-43-35L-38-25L-33-35L-28-25L-23-35L-18-25" fill="#d87567"/>' :
+          '<circle cx="-42" cy="20" r="7" fill="#f4a6c6"/><circle cx="42" cy="18" r="7" fill="#f6d365"/>') +
+        '<text x="0" y="47" text-anchor="middle" class="life-landmark-label">' + (cabin ? "PENNANT CABIN" : "GARDEN COTTAGE") + '</text></g>';
+    }
+    if (space.type === "second-chance") {
+      return '<g class="life-landmark" transform="translate(' + x + ' ' + y + ')"><path d="M-26-16Q-24-45 0-48Q24-45 26-16L13-1H-13Z" fill="#f1b1a2" stroke="#fff6e8" stroke-width="3"/>' +
+        '<path d="M-16-18H16 M-10-31H10" stroke="#fff4dd" stroke-width="4"/><path d="M-12-1L-6 14H6L12-1" fill="none" stroke="#8b765d" stroke-width="2"/>' +
+        '<rect x="-8" y="14" width="16" height="13" rx="2" fill="#c99a68"/><text x="0" y="46" text-anchor="middle" class="life-landmark-label">FRESH START</text></g>';
+    }
+    return '<g class="life-landmark" transform="translate(' + x + ' ' + y + ')"><rect x="-36" y="-12" width="72" height="42" rx="5" fill="#fff0ce" stroke="#977f6b" stroke-width="3"/>' +
+      '<path d="M-44-12L0-40L44-12Z" fill="#bd8193" stroke="#977f6b" stroke-width="3"/><rect x="-6" y="4" width="12" height="26" fill="#8eaa8b"/>' +
+      '<rect x="-26" y="-2" width="9" height="10" fill="#a9d8e6"/><rect x="17" y="-2" width="9" height="10" fill="#a9d8e6"/>' +
+      '<text x="0" y="46" text-anchor="middle" class="life-landmark-label">LITTLE SCHOOL</text></g>';
+  }
+
+  function renderTile(space) {
+    const type = DATA.legendTypes[space.type];
+    const start = space.type === "start";
+    const rotation = Number(space.angle || 0).toFixed(2);
+    const tile = start
+      ? '<rect x="-43" y="-31" width="86" height="62" rx="17" fill="#f6d365" stroke="#fff" stroke-width="4"/>' +
+        '<path d="M-31-23H31" stroke="#fff9dc" stroke-width="3" stroke-linecap="round"/>' +
+        '<text x="0" y="6" text-anchor="middle" class="life-start-label">START</text>'
+      : '<rect x="-26" y="-23" width="52" height="52" rx="14" fill="' + type.color +
+        '" stroke="#fff" stroke-width="3"/><path d="M-16-16H16" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity=".72"/>' +
+        '<text x="0" y="8" text-anchor="middle" class="life-tile-icon">' + escapeHTML(type.emoji) + '</text>';
+    return '<g class="life-tile" transform="translate(' + space.x.toFixed(2) + ' ' +
+      space.y.toFixed(2) + ') rotate(' + rotation + ')"><rect x="-26" y="-18" width="52" height="52" rx="13" fill="#456648" opacity=".2"/>' +
+      tile + '</g>' + (DATA.stopTypes.indexOf(space.type) !== -1 ? renderStopSign(space) : "");
+  }
+
+  function renderStopSign(space) {
+    const type = DATA.legendTypes[space.type];
+    const rotation = Number(space.angle || 0).toFixed(2);
+    if (space.type === "retirement") {
+      return '<g class="life-retirement-flag" transform="translate(' + space.x.toFixed(2) + ' ' +
+        space.y.toFixed(2) +         ') rotate(' + rotation + ')"><rect x="-57" y="-69" width="114" height="36" rx="5" fill="#fff" stroke="#e46c6c" stroke-width="3"/>' +
+        '<rect x="-50" y="-62" width="100" height="18" fill="url(#life-checkers)"/>' +
+        '<text x="0" y="-18" text-anchor="middle" class="life-stop-icon">🏁</text><text x="0" y="46" text-anchor="middle" class="life-stop-label">RETIREMENT</text></g>';
+    }
+    const points = "-40,-28 -28,-40 28,-40 40,-28 40,28 28,40 -28,40 -40,28";
+    const label = space.type === "second-chance" ? "SECOND CHANCE" : type.label.toUpperCase();
+    return '<g class="life-stop-sign" transform="translate(' + space.x.toFixed(2) + ' ' +
+      space.y.toFixed(2) + ') rotate(' + rotation + ')"><polygon points="' + points +
+      '" fill="' + DATA.stopSignColor + '" stroke="#fff" stroke-width="4"/><text x="0" y="9" text-anchor="middle" class="life-stop-icon">' +
+      escapeHTML(type.emoji) + '</text><text x="0" y="55" text-anchor="middle" class="life-stop-label">' +
+      escapeHTML(label) + '</text></g>';
+  }
+
+  function renderMarker(player, index) {
+    const space = DATA.spaces.find(function (entry) {
+      return entry.id === player.position;
+    });
+    if (!space) return "";
+    const sameSpace = state.players.filter(function (other) {
+      return other.position === player.position;
+    });
+    const seat = sameSpace.indexOf(player);
+    const offsetX = (seat - (sameSpace.length - 1) / 2) * 28;
+    const isActive = player.id === state.currentPlayerId && !player.isLeft && !player.retired;
+    const animation = state.animation && state.animation.type === "hop" &&
+      state.animation.playerId === player.id ? state.animation : null;
+    const from = animation && DATA.spaces.find(function (entry) {
+      return entry.id === animation.from;
+    });
+    const startX = (from ? from.x : space.x) + offsetX;
+    const startY = (from ? from.y : space.y) + 1;
+    const moveX = space.x - (from ? from.x : space.x);
+    const moveY = space.y - (from ? from.y : space.y);
+    const move = animation
+      ? '<animateTransform attributeName="transform" type="translate" from="0 0" to="' +
+        moveX.toFixed(2) + ' ' + moveY.toFixed(2) + '" dur="' + HOP_TIME +
+        'ms" additive="sum" fill="freeze"/>'
+      : "";
+    const avatar = DATA.avatars[index % DATA.avatars.length];
+    return '<g class="life-marker' + (isActive ? " is-active" : "") +
+      (player.isLeft ? " is-left" : "") + (player.retired ? " is-retired" : "") +
+      '" style="--marker-color:' + escapeHTML(player.color) + '" transform="translate(' +
+      startX.toFixed(2) + ' ' + startY.toFixed(2) + ')">' +
+      move + '<g class="life-marker-bob"><ellipse cx="0" cy="1" rx="27" ry="8" fill="#405b45" opacity=".22"/>' +
+      '<polygon points="-13,-28 13,-28 0,-3" fill="' + escapeHTML(player.color) + '"/>' +
+      (isActive ? '<circle cx="0" cy="-61" r="39" fill="none" stroke="#fff0a8" stroke-width="5" opacity=".9"/>' : "") +
+      '<g transform="scale(' + (isActive ? "1.08" : "1") + ')"><rect x="-32" y="-93" width="64" height="64" rx="19" fill="' + escapeHTML(player.color) +
+      '" stroke="#fff" stroke-width="4"/><rect x="-27" y="-88" width="54" height="54" rx="15" fill="#fff" stroke="#fff" stroke-width="3"/>' +
+      '<text x="0" y="-51" text-anchor="middle" dominant-baseline="middle" class="life-marker-avatar">' +
+      escapeHTML(avatar) + '</text></g><text x="0" y="23" text-anchor="middle" class="life-marker-name">' +
+      escapeHTML(player.name) + '</text></g></g>';
+  }
+
+  function renderBoard() {
+    const path = catmullRomPath(DATA.mainWaypoints);
+    const collegePath = boardGeometry ? boardGeometry.collegePath : "";
+    const tiles = boardGeometry ? DATA.spaces.map(renderTile).join("") : "";
+    const landmarks = boardGeometry ? DATA.spaces.filter(function (space) {
+      return space.type === "marriage" || space.type === "family" ||
+        space.type === "second-chance" || space.type === "retirement" ||
+        space.type === "graduation";
+    }).map(renderLandmark).join("") : "";
+    const markers = boardGeometry ? state.players.map(renderMarker).join("") : "";
+    const river = catmullRomPath(DATA.scenery.riverWaypoints);
+    const board = '<svg class="life-board-svg" viewBox="' + DATA.viewBox +
+      '" role="img" aria-label="Life Path illustrated winding board" data-life-board>' +
+      '<defs><linearGradient id="life-island" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b6d6a6"/><stop offset="1" stop-color="#83b784"/></linearGradient>' +
+      '<linearGradient id="life-water" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b8e3df"/><stop offset="1" stop-color="#91d1d1"/></linearGradient>' +
+      '<pattern id="life-checkers" width="12" height="12" patternUnits="userSpaceOnUse"><rect width="6" height="6" fill="#e46c6c"/><rect x="6" y="6" width="6" height="6" fill="#e46c6c"/></pattern>' +
+      '</defs><g class="life-camera-layer" transform="translate(' + camera.x.toFixed(2) + ' ' +
+      camera.y.toFixed(2) + ') scale(' + camera.zoom.toFixed(3) + ')">' +
+      '<rect class="life-water-backdrop" x="0" y="0" width="1600" height="1000" fill="url(#life-water)"/>' +
+      '<rect class="life-island" x="21" y="20" width="1558" height="960" rx="118" fill="url(#life-island)" stroke="#668f70" stroke-width="17"/>' +
+      '<rect x="33" y="32" width="1534" height="936" rx="108" fill="none" stroke="#d5e7c7" stroke-width="4" opacity=".85"/>' +
+      '<path d="' + river + '" class="life-river"/><path d="' + river + '" class="life-river-shine"/>' +
+      '<g class="life-props">' + (sceneryMarkup || "") + '</g>' +
+      '<g class="life-bridge" transform="translate(150 400) rotate(-42)"><rect x="-71" y="-19" width="142" height="38" rx="7" fill="#9a704f" stroke="#fff0d3" stroke-width="4"/>' +
+      '<path d="M-55-15V15 M-32-15V15 M-9-15V15 M14-15V15 M37-15V15 M60-15V15" stroke="#d4aa75" stroke-width="5"/>' +
+      '<path d="M-69-22H69 M-69 22H69" stroke="#76563f" stroke-width="5"/></g>' +
+      landmarks + '<path d="' + path + '" class="life-track-shadow"/><path d="' + path +
+      '" class="life-track-road"/><path d="' + path + '" class="life-track-center"/>' +
+      '<path d="' + collegePath + '" class="life-track-shadow"/><path d="' + collegePath +
+      '" class="life-track-road"/><path d="' + collegePath + '" class="life-track-center"/>' +
+      '<path d="' + path + '" fill="none" stroke="transparent" stroke-width="1" data-main-track/>' +
+      '<path d="' + collegePath + '" fill="none" stroke="transparent" stroke-width="1" data-college-track/>' +
+      '<g class="life-tiles">' + tiles + '</g><g class="life-markers">' + markers + '</g></g></svg>';
+    const legend = legendOpen
+      ? '<div class="life-legend-backdrop"><section class="life-legend" role="dialog" aria-modal="true">' +
+        '<button type="button" class="life-legend-close" data-legend-close aria-label="Close legend">×</button>' +
+        '<h3>Board guide</h3><div class="life-legend-list">' +
+        Object.keys(DATA.legendTypes).map(function (key) {
+          const item = DATA.legendTypes[key];
+          return '<div class="life-legend-item"><span style="--legend-color:' + item.color + '">' +
+            escapeHTML(item.emoji) + '</span><div><strong>' + escapeHTML(item.label) +
+            '</strong><small>' + escapeHTML(item.description) + '</small></div></div>';
+        }).join("") + '</div></section></div>'
+      : "";
+    return '<div class="life-board-column"><div class="life-board-canvas">' + board +
+      renderHud() +
+      '<div class="life-camera-controls"><button type="button" data-zoom-out aria-label="Zoom out">−</button>' +
+      '<button type="button" data-zoom-in aria-label="Zoom in">+</button>' +
+      '<button type="button" data-camera-fit>Fit board</button></div>' +
+      '<button class="life-legend-button" type="button" data-legend-open aria-label="Show board legend">?</button>' +
+      (currentContext && currentContext.isHost && window.location.hash === "#debug" ? renderDebugPanel() : "") +
+      (state.phase === "choosing" ? renderChoicePopup(activePlayer(), activePlayer() &&
+        activePlayer().id === localPlayerId) : "") +
+      renderTurnBanner() + legend + '</div></div>';
   }
 
   function renderChoicePopup(player, canChoose) {
@@ -824,12 +1204,12 @@
     return '<div class="life-choice-overlay"><section class="life-choice-popup" role="dialog" aria-modal="true">' +
       '<p class="life-popup-eyebrow">' + escapeHTML(player ? player.name : "Player") + '</p>' +
       '<h3>' + escapeHTML(decision.prompt) + '</h3>' + extra +
-      (!canChoose ? '<p class="life-watch-note">' + escapeHTML(player.name) + ' is choosing…</p>' : "") +
+      (!canChoose ? '<p class="life-watch-note">' + escapeHTML(player ? player.name : "Player") + ' is choosing…</p>' : "") +
       '<div class="life-choice-list">' + options + '</div></section></div>';
   }
 
   function formatMoney(value) {
-    return value + "K";
+    return value + "k";
   }
 
   function renderFloats(playerId) {
@@ -844,25 +1224,165 @@
     }).join("") + '</div>';
   }
 
-  function renderPlayerPanel(player) {
-    const active = player.id === state.currentPlayerId && !player.retired && !player.isLeft;
-    const career = player.career
-      ? player.career.emoji + " " + player.career.name
-      : "Career not chosen";
-    return '<article class="life-player-panel' + (active ? " is-active" : "") +
+  function tokenLeaders() {
+    const leaders = { wealth: [], happiness: [], knowledge: [] };
+    const connected = state.players.filter(function (player) {
+      return !player.isLeft;
+    });
+    ["wealth", "happiness", "knowledge"].forEach(function (kind) {
+      const maximum = connected.reduce(function (current, player) {
+        return Math.max(current, player.tokens[kind]);
+      }, 0);
+      if (maximum < 1) return;
+      leaders[kind] = connected.filter(function (player) {
+        return player.tokens[kind] === maximum;
+      }).map(function (player) {
+        return player.id;
+      });
+    });
+    return leaders;
+  }
+
+  function renderPlayerCard(player, index, leaders) {
+    const active = player.id === state.currentPlayerId && !player.isLeft && !player.retired;
+    const tag = player.isLeft
+      ? "Left"
+      : player.retired ? "Retired #" + player.finishPlace : "";
+    function chip(kind, emoji) {
+      return '<span class="life-token-chip">' + emoji + ' ' + player.tokens[kind] +
+        (leaders[kind].indexOf(player.id) !== -1 ? ' <b aria-label="Most tokens">👑</b>' : "") + '</span>';
+    }
+    const career = player.career ? player.career.name : "Choosing a path";
+    return '<article class="life-player-card' + (active ? " is-active" : "") +
       (player.isLeft ? " is-left" : "") + (player.retired ? " is-retired" : "") +
-      '" style="--player-color:' + escapeHTML(player.color) + '">' +
-      '<div class="life-panel-heading"><span class="life-player-dot"></span><strong>' +
-      escapeHTML(player.name) + '</strong>' +
-      (player.isLeft ? '<small>left</small>' : player.retired ? '<small>retired</small>' : "") +
-      '</div><div class="life-stat-line"><span>Cash</span><strong>' +
-      formatMoney(player.cash) + '</strong></div>' +
-      '<div class="life-token-line"><span>🐷 ' + player.tokens.wealth +
-      '</span><span>❤️ ' + player.tokens.happiness + '</span><span>📖 ' +
-      player.tokens.knowledge + '</span></div>' +
-      '<div class="life-career-line"><span>' + escapeHTML(career) +
-      '</span><strong>' + (player.salary ? player.salary + "K salary" : "No salary yet") +
-      '</strong></div>' + renderFloats(player.id) + '</article>';
+      '" style="--player-color:' + escapeHTML(player.color) + '"><div class="life-player-card-inner">' +
+      '<div class="life-hud-heading"><span class="life-avatar">' + DATA.avatars[index % DATA.avatars.length] +
+      '</span><strong>' + escapeHTML(player.name) + '</strong>' +
+      (tag ? '<small class="life-player-tag">' + escapeHTML(tag) + '</small>' : "") + '</div>' +
+      '<div class="life-hud-career">💼 ' + escapeHTML(career) + '</div>' +
+      '<div class="life-hud-cash">💵 <strong>' + formatMoney(player.cash) + '</strong></div>' +
+      '<div class="life-hud-chips">' + chip("happiness", "❤️") + chip("knowledge", "📖") +
+      chip("wealth", "🐷") + '</div></div>' + renderFloats(player.id) + '</article>';
+  }
+
+  function renderHud() {
+    const leaders = tokenLeaders();
+    return '<div class="life-hud" aria-label="Player cards">' +
+      state.players.map(function (player, index) {
+        return renderPlayerCard(player, index, leaders);
+      }).join("") + '</div>';
+  }
+
+  function renderTurnBanner() {
+    const player = activePlayer();
+    if (state.phase === "finished") return "";
+    const localTurn = Boolean(player && player.id === localPlayerId && !player.isLeft && !player.retired);
+    const text = localTurn
+      ? "Your turn!"
+      : player && ["spinning", "spin-result", "spin-fading"].indexOf(state.phase) !== -1
+        ? player.name + " is spinning…"
+        : player && state.phase === "choosing"
+          ? player.name + " is choosing…"
+          : player
+            ? player.name + " is taking a turn"
+            : "Life Path";
+    return '<div class="life-turn-banner' + (localTurn ? " is-your-turn" : "") +
+      '">' + escapeHTML(text) + '</div>';
+  }
+
+  function spinWheel({ title, segments, resultIndex, rotation, phase, canSpin, buttonLabel, resultLabel }) {
+    const center = 100;
+    const radius = 94;
+    const segmentAngle = 360 / segments.length;
+    const slices = segments.map(function (segment, index) {
+      const startAngle = (-90 + index * segmentAngle) * Math.PI / 180;
+      const endAngle = (-90 + (index + 1) * segmentAngle) * Math.PI / 180;
+      const midAngle = (startAngle + endAngle) / 2;
+      const x1 = center + Math.cos(startAngle) * radius;
+      const y1 = center + Math.sin(startAngle) * radius;
+      const x2 = center + Math.cos(endAngle) * radius;
+      const y2 = center + Math.sin(endAngle) * radius;
+      const labelX = center + Math.cos(midAngle) * 62;
+      const labelY = center + Math.sin(midAngle) * 62;
+      const winning = resultIndex === index &&
+        (phase === "spin-result" || phase === "spin-fading");
+      return '<g class="' + (winning ? "is-winning" : "") + '"><path d="M ' + center + ' ' +
+        center + ' L ' + x1.toFixed(2) + ' ' + y1.toFixed(2) + ' A ' + radius + ' ' +
+        radius + ' 0 0 1 ' + x2.toFixed(2) + ' ' + y2.toFixed(2) + ' Z" fill="' +
+        escapeHTML(segment.color) + '" stroke="#fff9e9" stroke-width="2"/><text x="' +
+        labelX.toFixed(2) + '" y="' + labelY.toFixed(2) +
+        '" text-anchor="middle" dominant-baseline="middle">' + escapeHTML(segment.label) + '</text></g>';
+    }).join("");
+    const isSpinning = phase === "spinning";
+    const isFading = phase === "spin-fading";
+    const button = phase === "awaiting-spin"
+      ? '<button type="button" class="life-wheel-button" data-spin' +
+        (canSpin ? "" : " disabled") + '>' + escapeHTML(buttonLabel) + '</button>'
+      : "";
+    const result = resultIndex === null || resultIndex === undefined
+      ? ""
+      : '<div class="life-wheel-result' + (phase === "spin-result" ? " is-visible" : "") +
+        '">' + escapeHTML(resultLabel) + '</div>';
+    return '<div class="life-spin-overlay"><section class="life-wheel-screen" role="dialog" aria-modal="true">' +
+      '<div class="life-wheel-heading"><span>' + escapeHTML(title.avatar) + '</span><strong>' +
+      escapeHTML(title.text) + '</strong></div><div class="life-wheel-shell' +
+      (isFading ? " is-fading" : "") + '"><span class="life-wheel-pointer' +
+      (isSpinning ? " is-ticking" : "") + '">▼</span><svg class="life-wheel-svg' +
+      (isSpinning ? " is-spinning" : "") + '" style="--wheel-turn:' + Number(rotation || 0) +
+      'deg" viewBox="0 0 200 200" role="img" aria-label="' + escapeHTML(title.description) +
+      '">' + slices + '<circle cx="100" cy="100" r="14" fill="#fffaf0" stroke="#718c70" stroke-width="3"/></svg>' +
+      button + result + '</div><p class="life-wheel-caption">' +
+      (phase === "awaiting-spin" ? "Tap the wheel or press Space" : escapeHTML(title.caption)) +
+      '</p></section></div>';
+  }
+
+  function renderSpinner(canAct) {
+    const spinning = ["spinning", "spin-result", "spin-fading"].indexOf(state.phase) !== -1;
+    const spin = state.currentSpin;
+    const kind = spin ? spin.kind : "normal";
+    const segments = kind === "lucky"
+      ? DATA.luckySpinResults.map(function (result, index) {
+        return { label: result.label, color: DATA.wheelColors[index % DATA.wheelColors.length] };
+      })
+      : DATA.spinNumbers.map(function (number, index) {
+        return { label: String(number), color: DATA.wheelColors[index % DATA.wheelColors.length] };
+      });
+    const player = activePlayer();
+    const playerIndex = Math.max(0, state.players.indexOf(player));
+    const titleText = canAct
+      ? "Your turn!"
+      : player && spinning
+        ? player.name + " is spinning…"
+        : player
+          ? player.name + " is about to spin…"
+          : "The wheel is ready";
+    const phase = spinning ? state.phase : "awaiting-spin";
+    const resultLabel = spin
+      ? kind === "lucky"
+        ? DATA.luckySpinResults[spin.resultIndex].label
+        : String(spin.number)
+      : "";
+    return spinWheel({
+      title: {
+        text: titleText,
+        avatar: DATA.avatars[playerIndex % DATA.avatars.length],
+        description: kind === "lucky" ? "Lucky Spin reward wheel" : "Number wheel",
+        caption: kind === "lucky" ? "An activity reward is on its way!" : "The number moves you along the path."
+      },
+      segments: segments,
+      resultIndex: spin ? spin.resultIndex : null,
+      rotation: spin ? spin.rotation : 0,
+      phase: phase,
+      canSpin: canAct && state.phase === "awaiting-spin" && !locallyActed,
+      buttonLabel: "SPIN",
+      resultLabel: resultLabel
+    });
+  }
+
+  function renderDebugPanel() {
+    return '<div class="life-debug-panel"><label>Tile # <input type="number" min="0" max="59" value="0" data-debug-tile></label>' +
+      '<button type="button" data-debug-jump>Jump active player to tile #</button>' +
+      '<button type="button" data-debug-cash>Give active player 100K</button></div>';
   }
 
   function renderResults() {
@@ -893,36 +1413,216 @@
     state = publicState;
     const player = activePlayer();
     const canAct = Boolean(player && player.id === localPlayerId && !player.isLeft && !player.retired);
-    const title = state.phase === "finished"
-      ? "The journey is complete"
-      : state.phase === "choosing" && player && !canAct
-        ? player.name + " is choosing…"
-        : canAct
-          ? "Your turn!"
-          : player
-            ? player.name + " is taking a turn"
-            : "Life Path";
-    const spinButton = state.phase === "awaiting-spin" && canAct
-      ? '<button class="life-spin-button" type="button" data-spin' +
-        (locallyActed ? " disabled" : "") + '>Spin' + (state.bonusSpin ? " again" : "") + '</button>'
+    const spinner = state.phase === "awaiting-spin" ||
+      ["spinning", "spin-result", "spin-fading"].indexOf(state.phase) !== -1
+      ? renderSpinner(canAct)
       : "";
-    const wheel = state.phase === "spinning" && state.currentSpin
-      ? '<div class="life-spin-overlay">' + renderWheel(state.currentSpin) + '</div>'
-      : "";
-    const finalResults = state.phase === "finished" ? renderResults() : "";
-    const orderedPlayers = state.players.slice().sort(function (first, second) {
-      return Number(first.isLeft) - Number(second.isLeft);
+    return '<div class="life-game"><div class="life-topbar"><div>' +
+      '<p class="life-eyebrow">A cozy game of choices</p><h3>Life Path</h3></div></div>' +
+      '<div class="life-layout">' + renderBoard() + '</div>' + spinner +
+      (state.phase === "choosing" && player && !canAct
+        ? '<p class="life-choice-waiting">' + escapeHTML(player.name) + ' is choosing…</p>'
+        : "") +
+      (state.phase === "finished" ? renderResults() : "") + '</div>';
+  }
+
+  function applyCamera(container) {
+    const layer = container.querySelector(".life-camera-layer");
+    if (layer) {
+      layer.setAttribute("transform", "translate(" + camera.x.toFixed(2) + " " +
+        camera.y.toFixed(2) + ") scale(" + camera.zoom.toFixed(3) + ")");
+    }
+  }
+
+  function centerCameraOn(space) {
+    if (!space) return;
+    camera.zoom = 1.6;
+    camera.x = 800 - space.x * camera.zoom;
+    camera.y = 500 - space.y * camera.zoom;
+    const board = document.querySelector("[data-life-board]");
+    if (board) applyCamera(board.parentNode);
+  }
+
+  function pauseAutoFollow() {
+    camera.autoFollowUntil = Date.now() + 5000;
+    if (cameraResumeTimer) clearTimeout(cameraResumeTimer);
+    cameraResumeTimer = setTimeout(function () {
+      cameraResumeTimer = null;
+      const player = activePlayer();
+      if (player) centerCameraOn(DATA.spaces.find(function (space) {
+        return space.id === player.position;
+      }));
+    }, 5000);
+  }
+
+  function svgPoint(svg, event) {
+    const matrix = svg.getScreenCTM();
+    if (!matrix) return { x: 800, y: 500 };
+    const point = svg.createSVGPoint();
+    point.x = event.clientX;
+    point.y = event.clientY;
+    return point.matrixTransform(matrix.inverse());
+  }
+
+  function clampZoom(value) {
+    return Math.max(0.5, Math.min(2.5, value));
+  }
+
+  function zoomAt(svg, point, nextZoom) {
+    const zoom = clampZoom(nextZoom);
+    const anchorX = (point.x - camera.x) / camera.zoom;
+    const anchorY = (point.y - camera.y) / camera.zoom;
+    camera.zoom = zoom;
+    camera.x = point.x - anchorX * zoom;
+    camera.y = point.y - anchorY * zoom;
+  }
+
+  function installCamera(container) {
+    const svg = container.querySelector("[data-life-board]");
+    if (!svg) return;
+    const pointers = new Map();
+    let gesture = null;
+    function pointForPointer(pointer) {
+      return svgPoint(svg, pointer);
+    }
+    function midpoint(first, second) {
+      return { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+    }
+    function distance(first, second) {
+      const dx = first.x - second.x;
+      const dy = first.y - second.y;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+    svg.addEventListener("pointerdown", function (event) {
+      if (event.button !== undefined && event.button !== 0) return;
+      event.preventDefault();
+      svg.setPointerCapture(event.pointerId);
+      pointers.set(event.pointerId, { clientX: event.clientX, clientY: event.clientY });
+      if (pointers.size === 1) {
+        const point = svgPoint(svg, event);
+        gesture = { type: "pan", point: point, x: camera.x, y: camera.y };
+      } else if (pointers.size === 2) {
+        const points = Array.from(pointers.values()).map(pointForPointer);
+        const middle = midpoint(points[0], points[1]);
+        gesture = {
+          type: "pinch",
+          distance: distance(points[0], points[1]),
+          zoom: camera.zoom,
+          anchorX: (middle.x - camera.x) / camera.zoom,
+          anchorY: (middle.y - camera.y) / camera.zoom
+        };
+      }
     });
-    return '<div class="life-game">' +
-      '<div class="life-topbar"><div><p class="life-eyebrow">A cozy game of choices</p>' +
-      '<h3>Life Path</h3></div><div class="life-turn-banner' +
-      (canAct ? " is-your-turn" : "") + '">' + escapeHTML(title) + spinButton + '</div></div>' +
-      '<div class="life-layout"><div class="life-board-column">' +
-      renderBoard() + wheel +
-      (state.phase === "choosing" ? renderChoicePopup(player, canAct) : "") +
-      '</div><aside class="life-stats-panel"><h3>Everyone’s journey</h3>' +
-      orderedPlayers.map(renderPlayerPanel).join("") + '</aside></div>' +
-      finalResults + '</div>';
+    svg.addEventListener("pointermove", function (event) {
+      if (!pointers.has(event.pointerId)) return;
+      pointers.set(event.pointerId, { clientX: event.clientX, clientY: event.clientY });
+      if (pointers.size === 1 && gesture && gesture.type === "pan") {
+        const point = svgPoint(svg, event);
+        camera.x = gesture.x + point.x - gesture.point.x;
+        camera.y = gesture.y + point.y - gesture.point.y;
+        pauseAutoFollow();
+      } else if (pointers.size >= 2 && gesture && gesture.type === "pinch") {
+        const points = Array.from(pointers.values()).slice(0, 2).map(pointForPointer);
+        const middle = midpoint(points[0], points[1]);
+        camera.zoom = clampZoom(gesture.zoom * distance(points[0], points[1]) / gesture.distance);
+        camera.x = middle.x - gesture.anchorX * camera.zoom;
+        camera.y = middle.y - gesture.anchorY * camera.zoom;
+        pauseAutoFollow();
+      }
+      applyCamera(container);
+    });
+    function endPointer(event) {
+      pointers.delete(event.pointerId);
+      gesture = null;
+      if (pointers.size === 1) {
+        const remaining = Array.from(pointers.values())[0];
+        const point = svgPoint(svg, remaining);
+        gesture = { type: "pan", point: point, x: camera.x, y: camera.y };
+      }
+    }
+    svg.addEventListener("pointerup", endPointer);
+    svg.addEventListener("pointercancel", endPointer);
+    svg.addEventListener("wheel", function (event) {
+      event.preventDefault();
+      zoomAt(svg, svgPoint(svg, event), camera.zoom * (event.deltaY < 0 ? 1.12 : 0.89));
+      pauseAutoFollow();
+      applyCamera(container);
+    }, { passive: false });
+
+    container.querySelectorAll("[data-zoom-in], [data-zoom-out]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        const factor = button.hasAttribute("data-zoom-in") ? 1.2 : 1 / 1.2;
+        zoomAt(svg, { x: 800, y: 500 }, camera.zoom * factor);
+        pauseAutoFollow();
+        applyCamera(container);
+      });
+    });
+    container.querySelector("[data-camera-fit]").addEventListener("click", function () {
+      camera.x = 0;
+      camera.y = 0;
+      camera.zoom = 1;
+      pauseAutoFollow();
+      applyCamera(container);
+    });
+
+    const player = activePlayer();
+    const key = player ? player.id + ":" + player.position : "";
+    if (key && key !== camera.followKey) {
+      camera.followKey = key;
+      if (Date.now() >= camera.autoFollowUntil) {
+        centerCameraOn(DATA.spaces.find(function (space) {
+          return space.id === player.position;
+        }));
+      }
+    }
+  }
+
+  function installKeyboardSpin() {
+    if (keyHandler) document.removeEventListener("keydown", keyHandler);
+    keyHandler = function (event) {
+      if (event.code !== "Space" || event.repeat || !document.querySelector(".life-game") || !state ||
+          state.phase !== "awaiting-spin" || !isCurrentTurn(localPlayerId) ||
+          event.target.closest("button, input, textarea, select")) return;
+      const button = document.querySelector("[data-spin]");
+      if (button && !button.disabled) {
+        event.preventDefault();
+        button.click();
+      }
+    };
+    document.addEventListener("keydown", keyHandler);
+  }
+
+  function installDebugControls(container, context) {
+    if (window.location.hash !== "#debug" || !context.isHost) return;
+    const jump = container.querySelector("[data-debug-jump]");
+    const giveCash = container.querySelector("[data-debug-cash]");
+    const tileInput = container.querySelector("[data-debug-tile]");
+    if (!jump || !giveCash || !tileInput) return;
+    jump.addEventListener("click", function () {
+      if (window.location.hash !== "#debug" || !context.isHost) return;
+      const tile = Number(tileInput.value);
+      const player = activePlayer();
+      if (!player || !Number.isInteger(tile) || tile < 0 || tile >= DATA.tileCodes.length) return;
+      turnVersion += 1;
+      player.position = "m" + tile;
+      state.currentSpin = null;
+      state.animation = null;
+      if (player.started) {
+        state.phase = "awaiting-spin";
+        state.pendingDecision = null;
+      } else {
+        makeFirstChoice(player);
+      }
+      publish();
+    });
+    giveCash.addEventListener("click", function () {
+      if (window.location.hash !== "#debug" || !context.isHost) return;
+      const player = activePlayer();
+      if (!player) return;
+      player.cash += 100;
+      setStatsAnimation([{ playerId: player.id, items: statsItems({ cash: 100 }) }]);
+      publish();
+    });
   }
 
   function animateResultTotals(container) {
@@ -950,7 +1650,14 @@
 
   function afterRender(container, context) {
     currentContext = context;
+    if (measureBoardGeometry(container)) {
+      context.render();
+      return;
+    }
     animateResultTotals(container);
+    installCamera(container);
+    installKeyboardSpin();
+    installDebugControls(container, context);
     container.querySelectorAll("[data-spin]").forEach(function (button) {
       button.addEventListener("click", function () {
         if (button.disabled || locallyActed) return;
@@ -967,6 +1674,20 @@
         context.sendAction({ type: "choice", id: button.getAttribute("data-choice") });
       });
     });
+    const showLegend = container.querySelector("[data-legend-open]");
+    if (showLegend) {
+      showLegend.addEventListener("click", function () {
+        legendOpen = true;
+        context.render();
+      });
+    }
+    const closeLegend = container.querySelector("[data-legend-close]");
+    if (closeLegend) {
+      closeLegend.addEventListener("click", function () {
+        legendOpen = false;
+        context.render();
+      });
+    }
   }
 
   function handleAction(action, senderId) {
@@ -1071,6 +1792,10 @@
       resultReported = false;
       locallyActed = false;
       resultsCounted = false;
+      camera = { x: 0, y: 0, zoom: 1, autoFollowUntil: 0, followKey: null };
+      legendOpen = false;
+      if (cameraResumeTimer) clearTimeout(cameraResumeTimer);
+      cameraResumeTimer = null;
       if (floatTimer) clearTimeout(floatTimer);
       floatTimer = null;
       return { state: state };
@@ -1083,6 +1808,10 @@
       locallyActed = false;
       resultsCounted = false;
       resultReported = state.phase === "finished";
+      camera = { x: 0, y: 0, zoom: 1, autoFollowUntil: 0, followKey: null };
+      legendOpen = false;
+      if (cameraResumeTimer) clearTimeout(cameraResumeTimer);
+      cameraResumeTimer = null;
     },
     receiveState: function (publicState) {
       const previousPlayer = state && state.currentPlayerId;

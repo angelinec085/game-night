@@ -215,6 +215,10 @@
     roomScreen.hidden = screen !== "room";
     gameScreen.hidden = screen !== "game";
     closedScreen.hidden = screen !== "closed";
+    document.body.classList.toggle(
+      "life-game-open",
+      screen === "game" && appElement.classList.contains("has-life-path")
+    );
   }
 
   function saveGuestRoom(code, name, avatarId) {

@@ -38,7 +38,7 @@
 
   function defaultQuality() {
     return window.innerWidth < 700 ||
-      (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4)
+      (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 2)
       ? "lite"
       : "high";
   }
@@ -62,7 +62,8 @@
 
   function prepareMarkup(markup) {
     const stageMarkup = '<div class="life-3d-stage" data-life-3d-stage aria-hidden="true"></div>' +
-      '<p class="life-view-toast" data-life-view-toast role="status" hidden></p>';
+      '<p class="life-view-toast" data-life-view-toast role="status" hidden></p>' +
+      '<p class="life3d-debug-status" data-life3d-debug-status role="status" hidden></p>';
     return markup.replace('<div class="life-board-canvas">',
       '<div class="life-board-canvas" data-life-view-mode="' + mode + '">' + stageMarkup);
   }

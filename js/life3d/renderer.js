@@ -92,6 +92,27 @@
     return badge;
   }
 
+  function reportBuildFailure(stage, step, error) {
+    console.error("Life Path 3D " + step + " setup failed.", error);
+    if (window.location.hash !== "#debug") return;
+    const status = stage.parentElement &&
+      stage.parentElement.querySelector("[data-life3d-debug-status]");
+    if (status) {
+      status.textContent = "3D failed at " + step;
+      status.dataset.failed = "true";
+      status.hidden = false;
+    }
+  }
+
+  function buildStep(stage, name, create, fallback) {
+    try {
+      return create();
+    } catch (error) {
+      reportBuildFailure(stage, name, error);
+      return fallback;
+    }
+  }
+
   function create(stage, boardData, initialPlayers, options) {
     const THREE = window.THREE;
     const timing = options.timing;
@@ -109,14 +130,40 @@
     renderer.domElement.style.touchAction = "none";
     stage.appendChild(renderer.domElement);
 
-    const trackData = window.Life3DTrack.makeData(THREE, boardData);
-    const world = window.Life3DWorld.create(THREE, scene, boardData, trackData, quality);
-    const track = window.Life3DTrack.create(
-      THREE, scene, boardData, trackData, world.sampleHeight, quality
-    );
-    const props = window.Life3DProps.create(
-      THREE, scene, boardData, trackData, world.sampleHeight, options.quality || "high"
-    );
+    const emptyTrackData = {
+      mainSpaces: [],
+      collegeSpaces: [],
+      samples: [],
+      branchSamples: [],
+      tileCenters: new Map()
+    };
+    const trackData = buildStep(stage, "board path", function () {
+      return window.Life3DTrack.makeData(THREE, boardData);
+    }, emptyTrackData);
+    const emptyWorld = {
+      sampleHeight: function () { return 0; },
+      followShadows: function () {},
+      update: function () {},
+      dispose: function () {}
+    };
+    const world = buildStep(stage, "terrain and sky", function () {
+      return window.Life3DWorld.create(THREE, scene, boardData, trackData, quality);
+    }, emptyWorld);
+    const emptyTrack = {
+      tileMeshes: new Map(),
+      dispose: function () {}
+    };
+    const track = buildStep(stage, "road and tiles", function () {
+      return window.Life3DTrack.create(
+        THREE, scene, boardData, trackData, world.sampleHeight, quality
+      );
+    }, emptyTrack);
+    const emptyProps = { update: function () {}, dispose: function () {} };
+    const props = buildStep(stage, "scenery", function () {
+      return window.Life3DProps.create(
+        THREE, scene, boardData, trackData, world.sampleHeight, quality
+      );
+    }, emptyProps);
     const actors = new Map();
     const movements = new Map();
     const floaters = [];
@@ -138,6 +185,8 @@
     let animationFrame = null;
     let lastFrameTime = 0;
     let resizeObserver = null;
+    let dprMediaQuery = null;
+    let dprChangeHandler = null;
     let destroyed = false;
     let overview = true;
     let pinnedOverview = false;
@@ -182,24 +231,29 @@
     }
 
     function addActor(player) {
-      const car = makeCar(THREE, player, quality);
-      const badge = makeBadge(stage, player, player.id === (options.localPlayerId || null));
-      scene.add(car.root);
-      const actor = {
-        root: car.root,
-        wheels: car.wheels,
-        badge: badge,
-        player: player,
-        position: player.position,
-        laneOffset: 0,
-        forwardOffset: 0,
-        carAssets: car
-      };
-      actors.set(player.id, actor);
-      const point = pointForTile(player.position);
-      if (point) car.root.position.copy(point);
-      refreshActorBadge(actor, player);
-      return actor;
+      try {
+        const car = makeCar(THREE, player, quality);
+        const badge = makeBadge(stage, player, player.id === (options.localPlayerId || null));
+        scene.add(car.root);
+        const actor = {
+          root: car.root,
+          wheels: car.wheels,
+          badge: badge,
+          player: player,
+          position: player.position,
+          laneOffset: 0,
+          forwardOffset: 0,
+          carAssets: car
+        };
+        actors.set(player.id, actor);
+        const point = pointForTile(player.position);
+        if (point) car.root.position.copy(point);
+        refreshActorBadge(actor, player);
+        return actor;
+      } catch (error) {
+        reportBuildFailure(stage, "player car", error);
+        return null;
+      }
     }
 
     function setPlayers(nextPlayers) {
@@ -216,6 +270,7 @@
         const forwardOffset = Math.floor(seatIndex / 3) * 3.2;
         let actor = actors.get(player.id);
         if (!actor) actor = addActor(player);
+        if (!actor) return;
         actor.laneOffset = laneOffset;
         actor.forwardOffset = forwardOffset;
         refreshActorBadge(actor, player);
@@ -322,12 +377,78 @@
     }
 
     function resize() {
-      const width = Math.max(1, stage.clientWidth);
-      const height = Math.max(1, stage.clientHeight);
-      renderer.setPixelRatio(quality === "lite" ? 1 : Math.min(window.devicePixelRatio || 1, 2));
+      const sizeContainer = stage.parentElement || stage;
+      const width = Math.max(1, sizeContainer.clientWidth);
+      const height = Math.max(1, sizeContainer.clientHeight);
+      const weakDevice = navigator.hardwareConcurrency > 0 &&
+        navigator.hardwareConcurrency <= 2;
+      const pixelRatio = quality === "lite" && weakDevice
+        ? 1
+        : Math.min(window.devicePixelRatio || 1, 2);
+      renderer.setPixelRatio(pixelRatio);
       renderer.setSize(width, height, false);
+      canvas.style.display = "block";
+      canvas.style.width = "100%";
+      canvas.style.height = "100%";
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
+      updateDebugStatus();
+    }
+
+    function updateDebugStatus() {
+      const debugStatus = stage.parentElement &&
+        stage.parentElement.querySelector("[data-life3d-debug-status]");
+      if (!debugStatus) return;
+      if (window.location.hash !== "#debug") {
+        debugStatus.hidden = true;
+        return;
+      }
+      if (debugStatus.dataset.failed === "true") return;
+      debugStatus.textContent = "3D OK, " + scene.children.length + " objects, " +
+        canvas.clientWidth + " x " + canvas.clientHeight + " @ " +
+        renderer.getPixelRatio() + " DPR";
+      debugStatus.hidden = false;
+    }
+
+    function watchDevicePixelRatio() {
+      if (dprMediaQuery && dprChangeHandler) {
+        if (dprMediaQuery.removeEventListener) {
+          dprMediaQuery.removeEventListener("change", dprChangeHandler);
+        } else if (dprMediaQuery.removeListener) {
+          dprMediaQuery.removeListener(dprChangeHandler);
+        }
+      }
+      if (!window.matchMedia) return;
+      dprMediaQuery = window.matchMedia(
+        "(resolution: " + (window.devicePixelRatio || 1) + "dppx)"
+      );
+      dprChangeHandler = function () {
+        resize();
+        watchDevicePixelRatio();
+      };
+      if (dprMediaQuery.addEventListener) {
+        dprMediaQuery.addEventListener("change", dprChangeHandler);
+      } else if (dprMediaQuery.addListener) {
+        dprMediaQuery.addListener(dprChangeHandler);
+      }
+    }
+
+    function setInitialHeroCamera() {
+      const actor = findActor(focusId);
+      if (!actor) return;
+      const forwardX = Math.sin(actor.root.rotation.y);
+      const forwardZ = Math.cos(actor.root.rotation.y);
+      target.copy(actor.root.position);
+      target.x += forwardX * 4;
+      target.z += forwardZ * 4;
+      camera.position.set(
+        actor.root.position.x - forwardX * 24,
+        actor.root.position.y + 14,
+        actor.root.position.z - forwardZ * 24
+      );
+      camera.lookAt(target);
+      overview = false;
+      pinnedOverview = false;
     }
 
     function positionBadges(now) {
@@ -431,6 +552,7 @@
       updateCamera(delta, now);
       positionBadges(now);
       renderer.render(scene, camera);
+      updateDebugStatus();
       const debugStats = stage.parentElement &&
         stage.parentElement.querySelector("[data-life3d-debug-stats]");
       if (debugStats) {
@@ -672,8 +794,7 @@
       mount(stage);
       setPlayers(activePlayers);
       resize();
-      camera.position.set(0, 165, 190);
-      camera.lookAt(target);
+      setInitialHeroCamera();
       canvas.addEventListener("pointerdown", handlePointerDown);
       canvas.addEventListener("pointermove", handlePointerMove);
       canvas.addEventListener("pointerup", handlePointerUp);
@@ -683,10 +804,10 @@
       document.addEventListener("visibilitychange", handleVisibility);
       if (window.ResizeObserver) {
         resizeObserver = new ResizeObserver(resize);
-        resizeObserver.observe(stage);
-      } else {
-        window.addEventListener("resize", resize);
+        resizeObserver.observe(stage.parentElement || stage);
       }
+      window.addEventListener("resize", resize);
+      watchDevicePixelRatio();
       animationFrame = window.requestAnimationFrame(renderFrame);
     }
 
@@ -717,7 +838,14 @@
       destroyed = true;
       if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
       if (resizeObserver) resizeObserver.disconnect();
-      else window.removeEventListener("resize", resize);
+      window.removeEventListener("resize", resize);
+      if (dprMediaQuery && dprChangeHandler) {
+        if (dprMediaQuery.removeEventListener) {
+          dprMediaQuery.removeEventListener("change", dprChangeHandler);
+        } else if (dprMediaQuery.removeListener) {
+          dprMediaQuery.removeListener(dprChangeHandler);
+        }
+      }
       document.removeEventListener("visibilitychange", handleVisibility);
       canvas.removeEventListener("pointerdown", handlePointerDown);
       canvas.removeEventListener("pointermove", handlePointerMove);

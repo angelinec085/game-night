@@ -27,6 +27,7 @@
   let activeRevealKey = null;
   let activeRevealUntil = 0;
   let revealTimer = null;
+  let advanceKeyHandler = null;
 
   function shuffle(cards) {
     const shuffled = cards.slice();
@@ -41,6 +42,14 @@
 
   function cardName(value) {
     return RANKS[value - 1] || String(value);
+  }
+
+  function avatarEmoji(avatarId) {
+    return window.GameNightAvatars.getAvatar(avatarId) || "🐾";
+  }
+
+  function playerLabel(player) {
+    return avatarEmoji(player.avatarId) + " " + player.name;
   }
 
   function escapeHTML(value) {
@@ -82,11 +91,13 @@
           return Object.prototype.hasOwnProperty.call(tieChoices, id);
         })
       } : null,
+      advanceStep: state.advanceStep,
       activeIds: state.activeIds.slice(),
       players: state.players.map(function (player) {
         const publicPlayer = {
           id: player.id,
           name: player.name,
+          avatarId: player.avatarId,
           color: player.color,
           isLeft: player.isLeft,
           locked: player.locked,
@@ -98,6 +109,7 @@
         return {
           id: player.id,
           name: player.name,
+          avatarId: player.avatarId,
           color: player.color,
           isLeft: player.isLeft,
           score: player.score
@@ -170,6 +182,48 @@
     locallyLocked = false;
   }
 
+  function waitForHost(nextAction) {
+    state.phase = "waiting-host";
+    state.pendingAdvance = nextAction;
+    state.advanceStep += 1;
+  }
+
+  function advanceAfterHost(action, senderId) {
+    if (!action || senderId !== playerId || state.phase !== "waiting-host" ||
+        !Number.isInteger(action.step) || action.step !== state.advanceStep) return;
+    const nextAction = state.pendingAdvance;
+    if (["finish", "next-round", "tied-round", "begin-tiebreaker", "retry-tiebreaker"]
+        .indexOf(nextAction) === -1) return;
+    state.advanceStep += 1;
+    state.pendingAdvance = null;
+    state.phase = "advancing";
+
+    if (nextAction === "finish") {
+      finishGame();
+    } else if (nextAction === "next-round") {
+      if (state.players.some(function (player) {
+        return !player.isLeft;
+      })) {
+        startNextRound(false);
+      } else {
+        finishGame();
+      }
+    } else if (nextAction === "tied-round") {
+      if (state.activeIds.filter(isActive).length < 2) {
+        beginTieBreaker();
+      } else {
+        startNextRound(true);
+      }
+    } else if (nextAction === "begin-tiebreaker") {
+      beginTieBreaker();
+    } else if (nextAction === "retry-tiebreaker") {
+      retryTieBreaker();
+    } else {
+      return;
+    }
+    publish();
+  }
+
   function startNextRound(carryPot) {
     if (middleDeck.length === 0) {
       finishGame();
@@ -180,6 +234,7 @@
     state.middleCard = middleDeck.shift();
     state.pot += state.middleCard;
     state.phase = "betting";
+    state.pendingAdvance = null;
     state.tieBreaker = null;
     if (!carryPot) {
       state.activeIds = state.players.filter(function (player) {
@@ -210,7 +265,7 @@
       if (cardIndex !== -1) hand.hand.splice(cardIndex, 1);
       if (hand.used.indexOf(value) === -1) hand.used.push(value);
       hand.lockedCard = null;
-      return { id: id, name: player.name, value: value };
+      return { id: id, name: player.name, avatarId: player.avatarId, value: value };
     });
 
     state.lastReveal = {
@@ -240,11 +295,7 @@
       }).map(function (player) {
         return player.id;
       });
-      if (middleDeck.length === 0) {
-        finishGame();
-      } else {
-        startNextRound(false);
-      }
+      waitForHost(middleDeck.length === 0 ? "finish" : "next-round");
       return;
     }
 
@@ -256,11 +307,9 @@
       return bet.name;
     }).join(" and ") + " tied; the pot carries over.");
 
-    if (state.tieStreak >= 3 || middleDeck.length === 0) {
-      beginTieBreaker();
-    } else {
-      startNextRound(true);
-    }
+    waitForHost(state.tieStreak >= 3 || middleDeck.length === 0
+      ? "begin-tiebreaker"
+      : "tied-round");
   }
 
   function beginTieBreaker() {
@@ -291,11 +340,17 @@
       return {
         id: id,
         name: playerFor(id).name,
+        avatarId: playerFor(id).avatarId,
         choice: tieChoices[id]
       };
     });
     const revealedChoices = activeChoices.map(function (entry) {
-      return { id: entry.id, name: entry.name, choice: entry.choice };
+      return {
+        id: entry.id,
+        name: entry.name,
+        avatarId: entry.avatarId,
+        choice: entry.choice
+      };
     });
 
     if (state.tieBreaker.type === "rps") {
@@ -303,14 +358,20 @@
       const second = activeChoices[1];
       const beats = { rock: "scissors", paper: "rock", scissors: "paper" };
       if (first.choice === second.choice) {
-        state.lastReveal = { kind: "rps-draw", choices: revealedChoices };
+        state.lastReveal = { kind: "rps-draw", pot: state.pot, choices: revealedChoices };
         addLog("Rock, Paper, Scissors was a draw. The tied players try again.");
-        retryTieBreaker();
+        waitForHost("retry-tiebreaker");
         return;
       }
 
       const winner = beats[first.choice] === second.choice ? first : second;
-      state.lastReveal = { kind: "tiebreak", choices: revealedChoices, winnerId: winner.id };
+      state.lastReveal = {
+        kind: "tiebreak",
+        tiebreakType: "rps",
+        pot: state.pot,
+        choices: revealedChoices,
+        winnerId: winner.id
+      };
       awardTieBreakerPot(winner.id, "with " + titleCase(winner.choice));
       return;
     }
@@ -324,13 +385,15 @@
     const oddChoice = upChoices.length === 1 ? upChoices[0] : (downChoices.length === 1 ? downChoices[0] : null);
     state.lastReveal = {
       kind: oddChoice ? "tiebreak" : "up-down-draw",
+      tiebreakType: "up-down",
+      pot: state.pot,
       choices: revealedChoices,
       winnerId: oddChoice ? oddChoice.id : null
     };
 
     if (!oddChoice) {
       addLog("Up or Down had no single odd pick. The tied players try again.");
-      retryTieBreaker();
+      waitForHost("retry-tiebreaker");
       return;
     }
 
@@ -344,6 +407,7 @@
   function retryTieBreaker() {
     tieChoices = Object.create(null);
     state.tieBreaker.attempt += 1;
+    state.phase = "tiebreak";
     state.players.forEach(function (player) {
       player.locked = false;
     });
@@ -360,7 +424,10 @@
     const won = state.pot;
     winner.score += won;
     addLog(winner.name + " won the pot " + reason + ".");
-    if (state.lastReveal) state.lastReveal.winnerId = winner.id;
+    if (state.lastReveal) {
+      state.lastReveal.winnerId = winner.id;
+      state.lastReveal.pot = won;
+    }
     state.pot = 0;
     state.tieStreak = 0;
     state.tieBreaker = null;
@@ -370,16 +437,13 @@
       return player.id;
     });
 
-    if (middleDeck.length === 0) {
-      finishGame();
-    } else {
-      startNextRound(false);
-    }
+    waitForHost(middleDeck.length === 0 ? "finish" : "next-round");
   }
 
   function finishGame() {
     clearLocks();
     state.phase = "finished";
+    state.pendingAdvance = null;
     state.tieBreaker = null;
     state.activeIds = [];
     const highestScore = Math.max.apply(null, state.players.map(function (player) {
@@ -452,7 +516,8 @@
       return '<div class="ca-result-row' + (winner ? " is-winner" : "") +
         (player.isLeft ? " is-left" : "") + '" style="--player-color:' +
         escapeAttribute(player.color) + '">' +
-        '<span class="ca-result-name"><i></i>' + escapeHTML(player.name) +
+        '<span class="ca-result-name"><i></i><span class="ca-result-animal">' +
+        escapeHTML(avatarEmoji(player.avatarId)) + '</span>' + escapeHTML(player.name) +
         (player.isLeft ? ' <small>(left)</small>' : "") + '</span>' +
         '<strong>' + player.score + '</strong></div>';
     }).join("");
@@ -503,7 +568,8 @@
     return '<div class="ca-seat ca-seat-' + (position.indexOf("ring:") === 0 ? "ring" : position) +
       (isLocal ? " is-local" : "") + (player.isLeft ? " is-left" : "") +
       (locked ? " is-locked" : "") + '"' + positionStyle + '>' +
-      '<div class="ca-seat-name"><i></i><strong>' + escapeHTML(player.name) + '</strong>' +
+      '<div class="ca-seat-name"><i></i><span class="ca-seat-animal">' +
+      escapeHTML(avatarEmoji(player.avatarId)) + '</span><strong>' + escapeHTML(player.name) + '</strong>' +
       (player.isLeft ? '<small>left</small>' : "") +
       (locked ? '<span class="ca-lock-badge" aria-label="Locked in">✓</span>' : "") + '</div>' +
       (backs ? '<div class="ca-card-stack' + orientation + '" aria-label="' +
@@ -566,6 +632,57 @@
       " tied players locked in</small></section></div>";
   }
 
+  function renderRoundResult(publicData) {
+    const reveal = publicData.lastReveal;
+    if (!reveal) return "";
+    let summary = "";
+    let details = "";
+    if (reveal.kind === "bets") {
+      if (reveal.winnerId) {
+        const winner = publicData.players.find(function (player) {
+          return player.id === reveal.winnerId;
+        });
+        const winningBet = reveal.bets.find(function (bet) {
+          return bet.id === reveal.winnerId;
+        });
+        summary = winner
+          ? playerLabel(winner) + " won the pot (" + reveal.pot + ") with a " +
+            cardName(winningBet.value)
+          : "";
+      } else {
+        const highest = Math.max.apply(null, reveal.bets.map(function (bet) {
+          return bet.value;
+        }));
+        const tied = reveal.bets.filter(function (bet) {
+          return bet.value === highest;
+        });
+        summary = tied.map(function (bet) {
+          return avatarEmoji(bet.avatarId) + " " + bet.name;
+        }).join(" and ") + " tied; the pot is now " + reveal.pot + ".";
+      }
+    } else {
+      details = (reveal.choices || []).map(function (choice) {
+        return avatarEmoji(choice.avatarId) + " " + escapeHTML(choice.name) + ": " +
+          titleCase(choice.choice);
+      }).join(" · ");
+      if (reveal.kind === "rps-draw" || reveal.kind === "up-down-draw") {
+        summary = (reveal.kind === "rps-draw" ? "Rock, Paper, Scissors" : "Up or Down") +
+          " was a draw; the pot remains " + reveal.pot + ".";
+      } else {
+        const winner = publicData.players.find(function (player) {
+          return player.id === reveal.winnerId;
+        });
+        summary = winner
+          ? playerLabel(winner) + " won the pot (" + reveal.pot + ") in " +
+            (reveal.tiebreakType === "rps" ? "Rock, Paper, Scissors." :
+              reveal.tiebreakType === "up-down" ? "Up or Down." : "a walkover.")
+          : "";
+      }
+    }
+    return '<div class="ca-round-result"><strong>' + escapeHTML(summary) + '</strong>' +
+      (details ? '<small>' + details + '</small>' : "") + '</div>';
+  }
+
   function render(publicData) {
     if (!publicData) return '<p class="ca-hand-note">Preparing the auction…</p>';
 
@@ -578,7 +695,8 @@
     const canBet = betting && active && !locked;
     const hand = myPrivateState ? myPrivateState.hand : [];
     const canShowCards = Boolean(myPrivateState);
-    const showReveal = revealIsVisible(publicData.lastReveal);
+    const showReveal = publicData.phase === "waiting-host" ||
+      revealIsVisible(publicData.lastReveal);
     const cardButtons = hand.map(function (value) {
       const isSelected = selectedCard === value;
       const disabled = !canBet || !canShowCards;
@@ -608,13 +726,15 @@
         return player.id === publicData.lastReveal.winnerId;
       })
       : null;
-    const potTransfer = winner
-      ? '<div class="ca-pot-transfer">Pot to ' + escapeHTML(winner.name) + '</div>'
+    const potTransfer = winner && publicData.lastReveal.kind !== "walkover"
+      ? '<div class="ca-pot-transfer">Pot to ' + escapeHTML(playerLabel(winner)) + '</div>'
       : "";
-    const tieReveal = showReveal && publicData.lastReveal && publicData.lastReveal.choices
-      ? '<p class="ca-reveal-note">' + publicData.lastReveal.choices.map(function (choice) {
-        return escapeHTML(choice.name) + ": " + escapeHTML(titleCase(choice.choice));
-      }).join(" · ") + '</p>'
+    const roundResult = showReveal ? renderRoundResult(publicData) : "";
+    const continueArea = publicData.phase === "waiting-host"
+      ? '<div class="ca-continue-area">' +
+        (currentContext && currentContext.isHost
+          ? '<button class="ca-lock-button" type="button" data-continue>Continue</button><small>Press Enter</small>'
+          : '<p>Waiting for the host to continue...</p>') + '</div>'
       : "";
 
     return '<div class="ca-game">' +
@@ -628,7 +748,7 @@
           '<div class="ca-pot"><small>Pot</small><strong>' + publicData.pot + '</strong></div>' +
           '<small class="ca-cards-left">' + publicData.remainingMiddle + ' cards left</small>' +
         '</section>' +
-        potTransfer + tieReveal +
+        potTransfer + roundResult + continueArea +
         '<section class="ca-hand-area">' +
           '<div class="ca-hand-heading"><strong>' + handLabel + '</strong>' +
             (active && locked && publicData.phase !== "finished"
@@ -654,6 +774,16 @@
 
   function afterRender(container, context) {
     currentContext = context;
+    if (advanceKeyHandler) document.removeEventListener("keydown", advanceKeyHandler);
+    advanceKeyHandler = function (event) {
+      if (event.key !== "Enter" || event.repeat || !context.isHost ||
+          !state || state.phase !== "waiting-host" ||
+          !document.querySelector(".ca-game") ||
+          event.target.closest("button, input, textarea, select")) return;
+      event.preventDefault();
+      context.sendAction({ type: "continue", step: state.advanceStep });
+    };
+    document.addEventListener("keydown", advanceKeyHandler);
     if (activeRevealUntil > Date.now() && !revealTimer) {
       revealTimer = setTimeout(function () {
         revealTimer = null;
@@ -687,6 +817,14 @@
         });
       });
     });
+
+    const continueButton = container.querySelector("[data-continue]");
+    if (continueButton) {
+      continueButton.addEventListener("click", function () {
+        if (!context.isHost || !state || state.phase !== "waiting-host") return;
+        context.sendAction({ type: "continue", step: state.advanceStep });
+      });
+    }
   }
 
   const cardAuction = {
@@ -702,6 +840,8 @@
         phase: "betting",
         tieStreak: 0,
         tieBreaker: null,
+        advanceStep: 0,
+        pendingAdvance: null,
         activeIds: players.map(function (player) {
           return player.id;
         }),
@@ -709,6 +849,7 @@
           return {
             id: player.id,
             name: player.name,
+            avatarId: player.avatarId,
             score: 0,
             color: PLAYER_COLORS[index % PLAYER_COLORS.length],
             isLeft: false,
@@ -733,6 +874,8 @@
       if (revealTimer) clearTimeout(revealTimer);
       removalTimer = null;
       revealTimer = null;
+      if (advanceKeyHandler) document.removeEventListener("keydown", advanceKeyHandler);
+      advanceKeyHandler = null;
 
       players.forEach(function (player) {
         privateByPlayer[player.id] = {
@@ -777,7 +920,9 @@
     onMessage: function (action, id, context) {
       if (!state || !context.isHost || state.phase === "finished") return;
       currentContext = context;
-      if (action && action.type === "lock-bet") {
+      if (action && action.type === "continue") {
+        advanceAfterHost(action, id);
+      } else if (action && action.type === "lock-bet") {
         handleBet(action, id);
       } else if (action && action.type === "tiebreak-choice") {
         handleTieBreakerChoice(action, id);
@@ -807,6 +952,11 @@
       addLog(departed.map(function (player) {
         return player.name + " left the game.";
       }).join(" "));
+
+      if (state.phase === "waiting-host") {
+        publish();
+        return;
+      }
 
       if (state.activeIds.length === 0) {
         state.activeIds = state.players.filter(function (player) {

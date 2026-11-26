@@ -3,18 +3,27 @@
   "use strict";
 
   // To add an event card, copy one object below, give it a unique id, and add two or three choices.
+  const PAYDAY_SCALE = 0.7;
   const mainWaypoints = [
-    [120, 900], [260, 860], [420, 910], [580, 860], [740, 910],
-    [900, 860], [1060, 910], [1220, 860], [1360, 880], [1470, 810],
-    [1480, 700], [1400, 610], [1250, 560], [1100, 600], [950, 540],
-    [800, 590], [650, 540], [500, 590], [350, 540], [230, 480],
-    [150, 400], [200, 300], [330, 250], [480, 210], [630, 260],
-    [780, 210], [930, 260], [1080, 210], [1230, 250], [1360, 200],
-    [1460, 130]
+    [120, 1500], [260, 1460], [420, 1510], [580, 1460], [740, 1510],
+    [900, 1460], [1060, 1510], [1220, 1460], [1360, 1480],
+    [1470, 1410], [1480, 1300], [1400, 1210],
+    [1250, 1160], [1100, 1200], [950, 1140], [800, 1190],
+    [650, 1140], [500, 1190], [350, 1140], [230, 1090],
+    [150, 1000], [190, 910], [330, 850],
+    [480, 800], [630, 850], [780, 800], [930, 850],
+    [1080, 800], [1230, 850], [1360, 830],
+    [1470, 760], [1480, 650], [1400, 560],
+    [1250, 510], [1100, 550], [950, 490], [800, 540],
+    [650, 490], [500, 540], [350, 500], [230, 440],
+    [150, 350], [200, 260],
+    [330, 190], [480, 150], [630, 200], [780, 150],
+    [930, 200], [1080, 150], [1230, 190], [1360, 140],
+    [1460, 90]
   ];
 
-  const collegeWaypoints = [[560, 760], [700, 730], [800, 790]];
-  const tileCodes = "sYYBGYOYPGYRYBGY1YOGYAYPGYBRYG2YOYGPYBAGYRBG3YOYGPYBRGYAYPG4";
+  const collegeWaypoints = [[560, 1360], [700, 1330], [820, 1390]];
+  const tileCodes = "sYYBGYOYPGYRYBGYAY1GYOYPGYBRYGYO2YGPYBAGYRYOGY3YBGYPYAGYRBYGYO4YGPYBRGYAYPGYOYBG5YRYGYPOBGYAYRGYPOG6";
   const codeTypes = {
     s: "start",
     Y: "event",
@@ -26,8 +35,10 @@
     A: "boost",
     "1": "marriage",
     "2": "family",
-    "3": "second-chance",
-    "4": "retirement"
+    "3": "home",
+    "4": "second-chance",
+    "5": "bucket-list",
+    "6": "retirement"
   };
   const spaces = Array.from(tileCodes).map(function (code, index) {
     return {
@@ -36,12 +47,12 @@
       next: index < tileCodes.length - 1 ? "m" + (index + 1) : null
     };
   });
-  const collegeSpaces = Array.from({ length: 6 }, function (_, index) {
+  const collegeSpaces = Array.from({ length: 7 }, function (_, index) {
     const number = index + 1;
     return {
       id: "c" + number,
-      type: number === 6 ? "graduation" : "college",
-      next: number === 6 ? "m11" : "c" + (number + 1)
+      type: number === 7 ? "graduation" : "college",
+      next: number === 7 ? "m12" : "c" + (number + 1)
     };
   });
 
@@ -213,6 +224,188 @@
         { id: "walk", label: "Walk the scenic route", effects: { cash: 0, wealth: 0, happiness: 2, knowledge: 1 } },
         { id: "rideshare", label: "Share a ride with a friend", effects: { cash: -20, wealth: 0, happiness: 2, knowledge: 0 } }
       ]
+    },
+    {
+      id: "e25", title: "A Market Morning", text: "Your garden basket is full before breakfast.",
+      choices: [
+        { id: "sell-produce", label: "Sell the extra vegetables", effects: { cash: 30, wealth: 0, happiness: 0, knowledge: 1 } },
+        { id: "share-produce", label: "Share a basket next door", effects: { cash: 10, wealth: 0, happiness: 2, knowledge: 0 } }
+      ]
+    },
+    {
+      id: "e26", title: "A Kitten at the Gate", text: "A tiny visitor curls up on your porch.",
+      choices: [
+        { id: "adopt-kitten", label: "Make a cozy home for it", effects: { cash: -20, wealth: 0, happiness: 2, knowledge: 0 } },
+        { id: "find-kitten-home", label: "Help find its family", effects: { cash: 0, wealth: 0, happiness: 1, knowledge: 1 } }
+      ]
+    },
+    {
+      id: "e27", title: "The Town Recipe Book", text: "Neighbors are collecting favorite recipes.",
+      choices: [
+        { id: "submit-recipe", label: "Write down your family recipe", effects: { cash: 0, wealth: 0, happiness: 1, knowledge: 2 } },
+        { id: "print-recipe", label: "Help print the little book", effects: { cash: -20, wealth: 0, happiness: 2, knowledge: 0 } }
+      ]
+    },
+    {
+      id: "e28", title: "A Tiny Theater", text: "The community hall is putting on a play.",
+      choices: [
+        { id: "watch-play", label: "Buy a front-row seat", effects: { cash: -20, wealth: 0, happiness: 2, knowledge: 0 } },
+        { id: "paint-play", label: "Paint the stage scenery", effects: { cash: 0, wealth: 0, happiness: 1, knowledge: 1 } }
+      ]
+    },
+    {
+      id: "e29", title: "A Bicycle Bell", text: "Your old bicycle could use a little care.",
+      choices: [
+        { id: "repair-bike", label: "Fix it with a neighbor", effects: { cash: -10, wealth: 1, happiness: 0, knowledge: 1 } },
+        { id: "trade-bike", label: "Trade a tune-up for a lesson", effects: { cash: 10, wealth: 0, happiness: 1, knowledge: 0 } }
+      ]
+    },
+    {
+      id: "e30", title: "A Birdhouse Workshop", text: "The park is hosting a gentle woodworking class.",
+      choices: [
+        { id: "build-birdhouse", label: "Build one for your garden", effects: { cash: -20, wealth: 1, happiness: 1, knowledge: 0 } },
+        { id: "teach-birdhouse", label: "Help a beginner learn", effects: { cash: 0, wealth: 0, happiness: 1, knowledge: 2 } }
+      ]
+    },
+    {
+      id: "e31", title: "A Rainy Garden", text: "A shower leaves the community garden sparkling.",
+      choices: [
+        { id: "collect-rain", label: "Save water for later", effects: { cash: 10, wealth: 1, happiness: 0, knowledge: 0 } },
+        { id: "plant-rain", label: "Plant a few thirsty flowers", effects: { cash: -10, wealth: 0, happiness: 2, knowledge: 0 } }
+      ]
+    },
+    {
+      id: "e32", title: "A Postcard from a Friend", text: "A friend sends a sunny postcard from the coast.",
+      choices: [
+        { id: "write-postcard", label: "Send a thoughtful reply", effects: { cash: -10, wealth: 0, happiness: 2, knowledge: 0 } },
+        { id: "map-postcard", label: "Look up their seaside town", effects: { cash: 0, wealth: 0, happiness: 0, knowledge: 2 } }
+      ]
+    },
+    {
+      id: "e33", title: "The Old Train Station", text: "The little station is reopening for weekend trips.",
+      choices: [
+        { id: "ride-train", label: "Take a short scenic ride", effects: { cash: -30, wealth: 0, happiness: 2, knowledge: 0 } },
+        { id: "volunteer-train", label: "Help welcome visitors", effects: { cash: 10, wealth: 0, happiness: 1, knowledge: 1 } }
+      ]
+    },
+    {
+      id: "e34", title: "A Box of Buttons", text: "A neighbor shares a colorful tin of spare buttons.",
+      choices: [
+        { id: "sew-buttons", label: "Sew a bright patchwork", effects: { cash: -10, wealth: 0, happiness: 2, knowledge: 1 } },
+        { id: "sort-buttons", label: "Sort them for the craft shelf", effects: { cash: 10, wealth: 1, happiness: 0, knowledge: 0 } }
+      ]
+    },
+    {
+      id: "e35", title: "A Hilltop Picnic", text: "The hill above town is perfect for lunch.",
+      choices: [
+        { id: "pack-picnic", label: "Pack everyone's favorite snacks", effects: { cash: -20, wealth: 0, happiness: 2, knowledge: 0 } },
+        { id: "find-picnic", label: "Find a new walking trail", effects: { cash: 0, wealth: 0, happiness: 1, knowledge: 2 } }
+      ]
+    },
+    {
+      id: "e36", title: "The Little Free Pantry", text: "The pantry shelf is nearly empty this week.",
+      choices: [
+        { id: "stock-pantry", label: "Fill it with useful staples", effects: { cash: -20, wealth: 0, happiness: 2, knowledge: 0 } },
+        { id: "organize-pantry", label: "Make a list of local growers", effects: { cash: 0, wealth: 0, happiness: 1, knowledge: 2 } }
+      ]
+    },
+    {
+      id: "e37", title: "A Puzzle Exchange", text: "Someone leaves a nearly finished puzzle at the cafe.",
+      choices: [
+        { id: "finish-puzzle", label: "Stay for one more piece", effects: { cash: 0, wealth: 0, happiness: 2, knowledge: 0 } },
+        { id: "swap-puzzle", label: "Trade for a fresh puzzle", effects: { cash: -10, wealth: 1, happiness: 1, knowledge: 0 } }
+      ]
+    },
+    {
+      id: "e38", title: "A Porch Concert", text: "A neighbor plays gentle songs as the sun sets.",
+      choices: [
+        { id: "listen-porch", label: "Bring a blanket and listen", effects: { cash: 0, wealth: 0, happiness: 2, knowledge: 1 } },
+        { id: "bring-tea", label: "Bring tea for the musicians", effects: { cash: -10, wealth: 0, happiness: 2, knowledge: 0 } }
+      ]
+    },
+    {
+      id: "e39", title: "A New Seed Catalog", text: "A colorful catalog arrives in the mail.",
+      choices: [
+        { id: "order-seeds", label: "Try a packet of unusual seeds", effects: { cash: -20, wealth: 1, happiness: 1, knowledge: 0 } },
+        { id: "study-seeds", label: "Read about native plants", effects: { cash: 0, wealth: 0, happiness: 0, knowledge: 2 } }
+      ]
+    },
+    {
+      id: "e40", title: "A Warm Scarf", text: "The knitting circle has extra wool to share.",
+      choices: [
+        { id: "knit-scarf", label: "Make a scarf for someone", effects: { cash: -10, wealth: 0, happiness: 2, knowledge: 1 } },
+        { id: "teach-knit", label: "Learn a new knitting stitch", effects: { cash: 0, wealth: 0, happiness: 1, knowledge: 2 } }
+      ]
+    },
+    {
+      id: "e41", title: "The Moonlit Pond", text: "The pond reflects a bright moon and a few stars.",
+      choices: [
+        { id: "sketch-pond", label: "Sketch the reflection", effects: { cash: 0, wealth: 0, happiness: 1, knowledge: 2 } },
+        { id: "share-pond", label: "Invite a friend to watch", effects: { cash: 0, wealth: 0, happiness: 2, knowledge: 1 } }
+      ]
+    },
+    {
+      id: "e42", title: "A Helpful Delivery", text: "A parcel lands on the wrong doorstep.",
+      choices: [
+        { id: "walk-parcel", label: "Walk it to the right home", effects: { cash: -10, wealth: 0, happiness: 2, knowledge: 0 } },
+        { id: "call-parcel", label: "Help the courier find the address", effects: { cash: 10, wealth: 0, happiness: 1, knowledge: 1 } }
+      ]
+    },
+    {
+      id: "e43", title: "A Painted Mailbox", text: "The street is brightening up its mailboxes.",
+      choices: [
+        { id: "paint-mailbox", label: "Paint yours with flowers", effects: { cash: -20, wealth: 0, happiness: 2, knowledge: 0 } },
+        { id: "design-mailbox", label: "Design a little number stencil", effects: { cash: 0, wealth: 0, happiness: 1, knowledge: 2 } }
+      ]
+    },
+    {
+      id: "e44", title: "A Quiet Museum", text: "The local museum has a new room of everyday treasures.",
+      choices: [
+        { id: "visit-museum", label: "Spend the afternoon exploring", effects: { cash: -10, wealth: 0, happiness: 1, knowledge: 2 } },
+        { id: "help-museum", label: "Help label a few objects", effects: { cash: 10, wealth: 0, happiness: 1, knowledge: 1 } }
+      ]
+    },
+    {
+      id: "e45", title: "The Community Orchard", text: "The first apples of the season are ready.",
+      choices: [
+        { id: "pick-apples", label: "Pick a basket to take home", effects: { cash: -10, wealth: 1, happiness: 1, knowledge: 0 } },
+        { id: "sell-apples", label: "Sell a few at the market", effects: { cash: 20, wealth: 0, happiness: 0, knowledge: 1 } }
+      ]
+    },
+    {
+      id: "e46", title: "A Friendly Board Game", text: "A friend brings a new game to game night.",
+      choices: [
+        { id: "learn-game", label: "Learn the clever rules", effects: { cash: 0, wealth: 0, happiness: 1, knowledge: 2 } },
+        { id: "host-game", label: "Bring snacks for everyone", effects: { cash: -20, wealth: 0, happiness: 2, knowledge: 0 } }
+      ]
+    },
+    {
+      id: "e47", title: "A Tiny Bookshop", text: "The bookshop is celebrating its first anniversary.",
+      choices: [
+        { id: "buy-bookshop", label: "Choose a well-loved book", effects: { cash: -20, wealth: 1, happiness: 1, knowledge: 0 } },
+        { id: "help-bookshop", label: "Recommend a favorite to a reader", effects: { cash: 10, wealth: 0, happiness: 1, knowledge: 1 } }
+      ]
+    },
+    {
+      id: "e48", title: "A Blanket Fort", text: "Rain taps the windows while your friends visit.",
+      choices: [
+        { id: "build-fort", label: "Build a very grand fort", effects: { cash: -10, wealth: 0, happiness: 2, knowledge: 0 } },
+        { id: "tell-fort", label: "Tell stories inside", effects: { cash: 0, wealth: 0, happiness: 2, knowledge: 1 } }
+      ]
+    },
+    {
+      id: "e49", title: "A Trail of Feathers", text: "Bright feathers lead you to a birdwatching group.",
+      choices: [
+        { id: "watch-birds", label: "Borrow a pair of binoculars", effects: { cash: 0, wealth: 0, happiness: 1, knowledge: 2 } },
+        { id: "join-birds", label: "Bring a thermos to share", effects: { cash: -10, wealth: 0, happiness: 2, knowledge: 1 } }
+      ]
+    },
+    {
+      id: "e50", title: "A Window Herb Box", text: "Your sunny windowsill is ready for something green.",
+      choices: [
+        { id: "plant-herbs", label: "Plant a few kitchen herbs", effects: { cash: -20, wealth: 1, happiness: 1, knowledge: 0 } },
+        { id: "share-herbs", label: "Trade a cutting with a neighbor", effects: { cash: 0, wealth: 0, happiness: 1, knowledge: 2 } }
+      ]
     }
   ];
 
@@ -222,17 +415,16 @@
     startingCash: 200,
     playerColors: ["#d87567", "#6487bd", "#7d9d59", "#a477b0", "#d19a42", "#4d9d94"],
     spaces: spaces.concat(collegeSpaces),
-    viewBox: "0 0 1600 1000",
+    viewBox: "0 0 1600 1700",
     mainWaypoints: mainWaypoints,
     collegeWaypoints: collegeWaypoints,
     tileCodes: tileCodes,
     collegeEntryIndex: 4,
-    collegeMergeIndex: 11,
+    collegeMergeIndex: 12,
     mainStart: "m0",
     collegeStart: "c1",
-    collegeMerge: "m11",
-    stopTypes: ["marriage", "family", "second-chance", "retirement", "graduation"],
-    avatars: ["🦊", "🐸", "🐼", "🐙", "🦉", "🐰"],
+    collegeMerge: "m12",
+    stopTypes: ["marriage", "family", "home", "second-chance", "bucket-list", "retirement", "graduation"],
     scenerySeed: 782041,
     rules: {
       collegeCost: 100,
@@ -248,6 +440,19 @@
       familyKnowledge: 1,
       familyStayWealth: 1,
       familyStayCash: 10,
+      homeApartmentCost: 40,
+      homeApartmentHappiness: 1,
+      homeApartmentWealth: 1,
+      homeHouseCost: 100,
+      homeHouseHappiness: 2,
+      homeHouseWealth: 2,
+      homeRentCash: 10,
+      bucketAdventureHappiness: 2,
+      bucketAdventureCost: 30,
+      bucketCourseKnowledge: 2,
+      bucketCourseCost: 20,
+      bucketInvestWealth: 2,
+      bucketInvestCost: 30,
       secondChanceRaise: 15,
       careerSwitchChoices: 2,
       sabbaticalCost: 20,
@@ -270,21 +475,28 @@
       college: { label: "Study", emoji: "📖", color: "#b9a6e8", description: "Gain one Knowledge token." },
       marriage: { label: "Marriage stop", emoji: "💍", color: "#e46c6c", description: "Get married and receive gifts, or stay single for tokens." },
       family: { label: "Family stop", emoji: "🏡", color: "#e46c6c", description: "Start a family or adopt a pet, or keep adventuring." },
+      home: { label: "Home stop", emoji: "🏠", color: "#e46c6c", description: "Choose a cozy apartment, a big house, or keep renting." },
       "second-chance": { label: "Second Chance stop", emoji: "🔀", color: "#e46c6c", description: "Choose a raise, a new career, or a sabbatical." },
+      "bucket-list": { label: "Bucket List stop", emoji: "🧳", color: "#e46c6c", description: "Choose an adventure, a course, or an investment." },
       graduation: { label: "Graduation stop", emoji: "🎓", color: "#e46c6c", description: "Gain Knowledge, choose a degree career, then take a bonus spin." },
       retirement: { label: "Retirement stop", emoji: "🏁", color: "#e46c6c", description: "Retire and collect your finishing-order bonus." }
     },
     scenery: {
       islandInset: 28,
-      riverWaypoints: [[20, 430], [220, 390], [430, 420], [650, 385], [850, 420], [1080, 385], [1300, 420], [1580, 390]],
-      treeCount: 34,
-      houseCount: 5,
-      flowerCount: 22,
-      rockCount: 12,
+      riverWaypoints: [[20, 680], [220, 650], [430, 690], [650, 650], [850, 690], [1080, 650], [1300, 690], [1580, 650]],
+      treeCount: 42,
+      houseCount: 7,
+      flowerCount: 28,
+      rockCount: 16,
       pondCount: 1,
       windmillCount: 1
     },
     spinNumbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    gameLengths: {
+      quick: { label: "Quick", numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] },
+      standard: { label: "Standard", numbers: [1, 2, 3, 4, 5, 6, 7, 8] },
+      long: { label: "Long", numbers: [1, 2, 3, 4, 5, 6] }
+    },
     wheelColors: ["#e9b5b2", "#f0d48d", "#a9d4bd", "#a9d8e6", "#c5b7df", "#e7bdd1", "#b9d8a8", "#f0c49b", "#afc8e7", "#d9dca0"],
     luckySpinResults: [
       { label: "−10k", description: "Lose 10K", effects: { cash: -10, wealth: 0, happiness: 0, knowledge: 0 } },
@@ -301,14 +513,19 @@
       { id: "library-helper", name: "Library Helper", emoji: "📚", salary: 45, kind: "standard" },
       { id: "village-baker", name: "Village Baker", emoji: "🥖", salary: 50, kind: "standard" },
       { id: "park-ranger", name: "Park Ranger", emoji: "🐿️", salary: 60, kind: "standard" },
+      { id: "community-gardener", name: "Community Gardener", emoji: "🪴", salary: 42, kind: "standard" },
+      { id: "bakery-decorator", name: "Bakery Decorator", emoji: "🧁", salary: 55, kind: "standard" },
       { id: "wildlife-biologist", name: "Wildlife Biologist", emoji: "🦉", salary: 70, kind: "degree" },
       { id: "kind-architect", name: "Kindness Architect", emoji: "🏡", salary: 80, kind: "degree" },
       { id: "planetarium-guide", name: "Planetarium Guide", emoji: "🌙", salary: 90, kind: "degree" },
-      { id: "community-researcher", name: "Community Researcher", emoji: "💛", salary: 110, kind: "degree" }
+      { id: "community-researcher", name: "Community Researcher", emoji: "💛", salary: 110, kind: "degree" },
+      { id: "botanical-illustrator", name: "Botanical Illustrator", emoji: "🎨", salary: 75, kind: "degree" },
+      { id: "coastal-ecologist", name: "Coastal Ecologist", emoji: "🦀", salary: 95, kind: "degree" }
     ],
     eventCards: eventCards,
     retirementBonuses: [400, 300, 200, 100, 50, 50],
     tokenBonus: 400,
-    pointsPerToken: 20
+    pointsPerToken: 20,
+    PAYDAY_SCALE: PAYDAY_SCALE
   };
 }());

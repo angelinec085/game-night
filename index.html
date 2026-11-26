@@ -23,7 +23,11 @@
         <form id="create-form" class="form-section">
           <label for="nickname">Your nickname</label>
           <input id="nickname" name="nickname" type="text" maxlength="20" autocomplete="nickname" placeholder="e.g. Sunny" required>
-          <button class="button button-primary" type="submit">Create Room</button>
+          <section class="animal-picker-section" aria-labelledby="home-animal-title">
+            <h3 id="home-animal-title">Pick your animal</h3>
+            <div id="home-animal-picker" class="animal-picker-grid"></div>
+          </section>
+          <button id="create-room-button" class="button button-primary" type="submit" disabled>Create Room</button>
         </form>
 
         <div class="divider"><span>or join friends</span></div>
@@ -32,7 +36,7 @@
           <label for="room-code-input">Room code</label>
           <input id="room-code-input" name="room-code" type="text" maxlength="4" autocomplete="off" placeholder="ABCD" aria-describedby="room-code-help" required>
           <p id="room-code-help" class="field-help">Ask the host for their four-letter code.</p>
-          <button class="button button-secondary" type="submit">Join Room</button>
+          <button id="join-room-button" class="button button-secondary" type="submit" disabled>Join Room</button>
         </form>
         <p id="home-message" class="message" role="status" aria-live="polite"></p>
       </section>
@@ -48,6 +52,11 @@
           <span id="player-count" class="player-count"></span>
         </div>
         <ul id="player-list" class="player-list" aria-live="polite"></ul>
+        <div class="my-animal-control">
+          <button id="my-animal-button" class="animal-change-button" type="button"></button>
+          <div id="lobby-animal-picker" class="animal-picker-grid lobby-animal-picker" hidden></div>
+          <p id="animal-change-message" class="field-help"></p>
+        </div>
 
         <div class="game-picker-section">
           <h3>Choose a game</h3>
@@ -87,6 +96,7 @@
       </section>
     </main>
 
+    <script src="js/avatars.js"></script>
     <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <script src="js/net.js"></script>
     <script src="js/games/card-auction.js"></script>

@@ -4,6 +4,9 @@
 
   const GAME_ID = "life-path";
   const DATA = window.LifePathData;
+  const BOARD_WIDTH = 1600;
+  const BOARD_HEIGHT = 1700;
+  const FAST_PREFERENCE_KEY = "lifePathFastAnimations";
   const SPIN_TIME = 2800;
   const SPIN_RESULT_TIME = 800;
   const SPIN_FADE_TIME = 400;
@@ -25,6 +28,28 @@
   let camera = { x: 0, y: 0, zoom: 1, autoFollowUntil: 0, followKey: null };
   let cameraResumeTimer = null;
   let keyHandler = null;
+  let fastAnimations = false;
+  let paceTimer = null;
+
+  function hopDuration() {
+    return fastAnimations ? 120 : HOP_TIME;
+  }
+
+  function readFastAnimations() {
+    try {
+      return window.localStorage.getItem(FAST_PREFERENCE_KEY) === "true";
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function saveFastAnimations() {
+    try {
+      window.localStorage.setItem(FAST_PREFERENCE_KEY, String(fastAnimations));
+    } catch (error) {
+      // Private browsing can block storage, but the toggle still works for this game.
+    }
+  }
 
   function escapeHTML(value) {
     return String(value).replace(/[&<>"']/g, function (character) {
@@ -36,6 +61,10 @@
         "'": "&#39;"
       }[character];
     });
+  }
+
+  function avatarEmoji(avatarId) {
+    return window.GameNightAvatars.getAvatar(avatarId) || "🐾";
   }
 
   function shuffle(items) {
@@ -194,10 +223,123 @@
     return statsItems(effects);
   }
 
-  function scheduleTurnAdvance(version, delay) {
+  function beginTurnTracking(player) {
+    if (!player) return;
+    state.turnBaseline = {
+      playerId: player.id,
+      cash: player.cash,
+      salary: player.salary,
+      tokens: {
+        wealth: player.tokens.wealth,
+        happiness: player.tokens.happiness,
+        knowledge: player.tokens.knowledge
+      }
+    };
+    state.turnProgress = { playerId: player.id, spins: [], landing: null };
+  }
+
+  function turnSummaryChanges(player) {
+    const baseline = state.turnBaseline;
+    if (!baseline || baseline.playerId !== player.id) return [];
+    const changes = [];
+    const cash = player.cash - baseline.cash;
+    const salary = player.salary - baseline.salary;
+    if (cash) changes.push({
+      text: (cash > 0 ? "+" : "") + cash + "K",
+      kind: cash > 0 ? "good" : "cost"
+    });
+    ["wealth", "happiness", "knowledge"].forEach(function (kind) {
+      const difference = player.tokens[kind] - baseline.tokens[kind];
+      if (!difference) return;
+      const emoji = kind === "wealth" ? "🐷" : kind === "happiness" ? "❤️" : "📖";
+      changes.push({
+        text: (difference > 0 ? "+" : "") + difference + " " + emoji,
+        kind: "token"
+      });
+    });
+    if (salary) changes.push({
+      text: "Salary " + (salary > 0 ? "+" : "") + salary + "K",
+      kind: "good"
+    });
+    return changes;
+  }
+
+  function makeTurnSummary() {
+    const player = activePlayer();
+    if (!player) return null;
+    const progress = state.turnProgress && state.turnProgress.playerId === player.id
+      ? state.turnProgress
+      : { spins: [], landing: null };
+    const changes = turnSummaryChanges(player);
+    const cashChange = state.turnBaseline && state.turnBaseline.playerId === player.id
+      ? player.cash - state.turnBaseline.cash
+      : 0;
+    const spinText = progress.spins.length
+      ? "spun a " + progress.spins.map(function (number) {
+        return String(number);
+      }).join(" and then a ")
+      : "finished their path choice";
+    let sentence = player.name + " " + spinText;
+    if (progress.landing) sentence += ", landed on " + progress.landing;
+    if (cashChange > 0) sentence += " and earned " + cashChange + "k";
+    else if (cashChange < 0) sentence += " and spent " + Math.abs(cashChange) + "k";
+    return {
+      playerId: player.id,
+      name: player.name,
+      avatarId: player.avatarId,
+      color: player.color,
+      sentence: sentence + ".",
+      changes: changes
+    };
+  }
+
+  function clearPaceTimer() {
+    if (paceTimer) clearTimeout(paceTimer);
+    paceTimer = null;
+  }
+
+  function schedulePaceAdvance() {
+    clearPaceTimer();
+    if (!state || !currentContext || !currentContext.isHost ||
+        state.phase !== "waiting-host" || state.pace === "manual") return;
+    const duration = state.pace === "auto5" ? 5000 : 10000;
+    const remaining = Math.max(0, duration - (Date.now() - state.countdownStartedAt));
+    const step = state.advanceStep;
+    paceTimer = setTimeout(function () {
+      advanceLifeTurn(step, localPlayerId);
+    }, remaining);
+  }
+
+  function waitForHost() {
+    clearPaceTimer();
+    state.phase = "waiting-host";
+    state.turnSummary = makeTurnSummary();
+    state.advanceStep += 1;
+    const duration = state.pace === "auto5" ? 5000 :
+      state.pace === "auto10" ? 10000 : 0;
+    state.countdownStartedAt = duration ? Date.now() : null;
+    state.countdownDuration = duration;
+    publish();
+    schedulePaceAdvance();
+  }
+
+  function advanceLifeTurn(step, senderId) {
+    if (!state || !currentContext || !currentContext.isHost ||
+        senderId !== localPlayerId || state.phase !== "waiting-host" ||
+        !Number.isInteger(step) || step !== state.advanceStep) return;
+    clearPaceTimer();
+    state.advanceStep += 1;
+    state.countdownStartedAt = null;
+    state.countdownDuration = 0;
+    state.turnSummary = null;
+    state.phase = "advancing";
+    prepareNextTurn();
+  }
+
+  function scheduleTurnSummary(version, delay) {
     setTimeout(function () {
       if (!state || state.phase === "finished" || version !== turnVersion) return;
-      prepareNextTurn();
+      waitForHost();
     }, delay);
   }
 
@@ -222,6 +364,7 @@
       turnVersion += 1;
       state.turnIndex = index;
       state.currentPlayerId = player.id;
+      beginTurnTracking(player);
       state.bonusSpin = false;
       state.currentSpin = null;
       state.pendingDecision = null;
@@ -240,6 +383,7 @@
 
   function finishGame() {
     if (!state || state.phase === "finished") return;
+    clearPaceTimer();
     state.phase = "finished";
     state.pendingDecision = null;
     state.currentSpin = null;
@@ -289,6 +433,7 @@
       return {
         id: player.id,
         name: player.name,
+        avatarId: player.avatarId,
         color: player.color,
         isLeft: player.isLeft,
         cash: player.cash,
@@ -398,6 +543,24 @@
       ], "bonus-spin");
       return;
     }
+    if (space.type === "home") {
+      makeChoice("home", "Choose a place to call home.", [
+        {
+          id: "apartment",
+          label: "Cozy apartment",
+          detail: "-" + DATA.rules.homeApartmentCost + "K, +" +
+            DATA.rules.homeApartmentHappiness + " ❤️, +" + DATA.rules.homeApartmentWealth + " 🐷."
+        },
+        {
+          id: "big-house",
+          label: "Big house",
+          detail: "-" + DATA.rules.homeHouseCost + "K, +" +
+            DATA.rules.homeHouseHappiness + " ❤️, +" + DATA.rules.homeHouseWealth + " 🐷."
+        },
+        { id: "rent", label: "Keep renting", detail: "+" + DATA.rules.homeRentCash + "K." }
+      ], "bonus-spin");
+      return;
+    }
     if (space.type === "second-chance") {
       makeChoice("second-chance", "A second chance", [
         { id: "raise", label: "Take a raise", detail: "+" + DATA.rules.secondChanceRaise + "K salary." },
@@ -406,14 +569,42 @@
           DATA.rules.sabbaticalCost + "K, +" + DATA.rules.sabbaticalHappiness +
           " ❤️, +" + DATA.rules.sabbaticalKnowledge + " 📖." }
       ], "bonus-spin");
+      return;
+    }
+    if (space.type === "bucket-list") {
+      makeChoice("bucket-list", "Make room for a dream.", [
+        {
+          id: "adventure",
+          label: "Big adventure",
+          detail: "+" + DATA.rules.bucketAdventureHappiness + " ❤️, -" +
+            DATA.rules.bucketAdventureCost + "K."
+        },
+        {
+          id: "course",
+          label: "Take a course",
+          detail: "+" + DATA.rules.bucketCourseKnowledge + " 📖, -" +
+            DATA.rules.bucketCourseCost + "K."
+        },
+        {
+          id: "invest",
+          label: "Invest",
+          detail: "+" + DATA.rules.bucketInvestWealth + " 🐷, -" +
+            DATA.rules.bucketInvestCost + "K."
+        }
+      ], "bonus-spin");
     }
   }
 
   function resolveLanding(player, space, version) {
     if (!space || version !== turnVersion || !isCurrentTurn(player.id)) return;
+    if (state.turnProgress && state.turnProgress.playerId === player.id) {
+      const legend = DATA.legendTypes[space.type];
+      state.turnProgress.landing = legend ? legend.label : space.type;
+    }
     if (space.type === "event" || space.type === "milestone" ||
         space.type === "marriage" || space.type === "family" ||
-        space.type === "second-chance") {
+        space.type === "home" || space.type === "second-chance" ||
+        space.type === "bucket-list") {
       createLandingChoice(player, space);
       publish();
       return;
@@ -421,8 +612,7 @@
     if (space.type === "retirement") {
       retirePlayer(player);
       publish();
-      if (allConnectedPlayersRetired()) finishGame();
-      else prepareNextTurn();
+      scheduleTurnSummary(version, EFFECT_TIME);
       return;
     }
     if (space.type === "activity") {
@@ -435,7 +625,7 @@
       state.phase = "resolving";
       setStatsAnimation([{ playerId: player.id, items: statsItems({ cash: cash }) }]);
       publish();
-      scheduleTurnAdvance(version, EFFECT_TIME);
+      scheduleTurnSummary(version, EFFECT_TIME);
       return;
     }
     if (space.type === "setback") {
@@ -443,7 +633,7 @@
       state.phase = "resolving";
       setStatsAnimation([{ playerId: player.id, items: statsItems({ cash: -20 }) }]);
       publish();
-      scheduleTurnAdvance(version, EFFECT_TIME);
+      scheduleTurnSummary(version, EFFECT_TIME);
       return;
     }
     if (space.type === "boost") {
@@ -456,16 +646,7 @@
     state.phase = "resolving";
     state.animation = null;
     publish();
-    scheduleTurnAdvance(version, 100);
-  }
-
-  function allConnectedPlayersRetired() {
-    const connected = state.players.filter(function (player) {
-      return !player.isLeft;
-    });
-    return connected.length > 0 && connected.every(function (player) {
-      return player.retired;
-    });
+    scheduleTurnSummary(version, 100);
   }
 
   function retirePlayer(player) {
@@ -489,7 +670,7 @@
     state.pendingDecision = null;
     publish();
     if (path.length === 0) {
-      prepareNextTurn();
+      scheduleTurnSummary(version, 100);
       return;
     }
 
@@ -500,7 +681,8 @@
       player.position = destination.id;
       const changes = { cash: 0, wealth: 0, happiness: 0, knowledge: 0 };
       if (destination.type === "payday") {
-        changes.cash = player.salary + (index === path.length - 1 ? DATA.rules.paydayLandingBonus : 0);
+        changes.cash = player.salary * DATA.PAYDAY_SCALE +
+          (index === path.length - 1 ? DATA.rules.paydayLandingBonus : 0);
         player.cash += changes.cash;
       }
       state.animation = {
@@ -514,7 +696,7 @@
           : []
       };
       publish();
-      await wait(HOP_TIME);
+      await wait(hopDuration());
       if (version !== turnVersion || !isCurrentTurn(player.id)) return;
       if (DATA.stopTypes.indexOf(destination.type) !== -1) {
         resolveLanding(player, destination, version);
@@ -537,9 +719,14 @@
       : state && state.phase === "awaiting-spin";
     if (!state || !isCurrentTurn(playerId) || !correctPhase) return;
     const version = turnVersion;
-    const segmentCount = kind === "lucky" ? DATA.luckySpinResults.length : DATA.spinNumbers.length;
+    const spinNumbers = state.spinNumbers || DATA.gameLengths.standard.numbers;
+    const segmentCount = kind === "lucky" ? DATA.luckySpinResults.length : spinNumbers.length;
     const resultIndex = Math.floor(Math.random() * segmentCount);
-    const number = kind === "lucky" ? null : DATA.spinNumbers[resultIndex];
+    const number = kind === "lucky" ? null : spinNumbers[resultIndex];
+    if (kind !== "lucky" && state.turnProgress &&
+        state.turnProgress.playerId === playerId) {
+      state.turnProgress.spins.push(number);
+    }
     state.phase = "spinning";
     state.bonusSpin = false;
     state.pendingDecision = null;
@@ -573,7 +760,7 @@
       state.currentSpin = null;
       setStatsAnimation([{ playerId: player.id, items: items }]);
       publish();
-      scheduleTurnAdvance(version, EFFECT_TIME);
+      scheduleTurnSummary(version, EFFECT_TIME);
       return;
     }
     await movePlayer(player, number, version);
@@ -618,9 +805,12 @@
           : []
       };
       publish();
-      await wait(HOP_TIME);
+      await wait(hopDuration());
     }
     if (version !== turnVersion || !isCurrentTurn(player.id)) return;
+    if (state.turnProgress && state.turnProgress.playerId === player.id) {
+      state.turnProgress.landing = "Graduation";
+    }
     beginCareerPick(player, "degree", DATA.rules.degreeCareerChoices, "college-career");
   }
 
@@ -749,6 +939,23 @@
       entries.push({ playerId: player.id, items: applyEffects(player, effects) });
       setBonusSpin(entries);
       return;
+    } else if (decision.kind === "home") {
+      const effects = id === "apartment"
+        ? {
+          cash: -DATA.rules.homeApartmentCost,
+          happiness: DATA.rules.homeApartmentHappiness,
+          wealth: DATA.rules.homeApartmentWealth
+        }
+        : id === "big-house"
+          ? {
+            cash: -DATA.rules.homeHouseCost,
+            happiness: DATA.rules.homeHouseHappiness,
+            wealth: DATA.rules.homeHouseWealth
+          }
+          : { cash: DATA.rules.homeRentCash };
+      entries.push({ playerId: player.id, items: applyEffects(player, effects) });
+      setBonusSpin(entries);
+      return;
     } else if (decision.kind === "second-chance") {
       if (id === "raise") {
         player.salary += DATA.rules.secondChanceRaise;
@@ -757,13 +964,13 @@
         return;
       }
       if (id === "switch") {
-      const availableCareers = DATA.careers.filter(function (career) {
-        return career.kind === player.career.kind && career.id !== player.career.id;
-      });
-      const careers = shuffle(availableCareers).slice(0, DATA.rules.careerSwitchChoices);
-      makeChoice("career-pick", "Choose a new career.", careerOptions(careers, "career"), "career-switch");
-      publish();
-      return;
+        const availableCareers = DATA.careers.filter(function (career) {
+          return career.kind === player.career.kind && career.id !== player.career.id;
+        });
+        const careers = shuffle(availableCareers).slice(0, DATA.rules.careerSwitchChoices);
+        makeChoice("career-pick", "Choose a new career.", careerOptions(careers, "career"), "career-switch");
+        publish();
+        return;
       }
       entries.push({ playerId: player.id, items: applyEffects(player, {
         cash: -DATA.rules.sabbaticalCost,
@@ -772,11 +979,20 @@
       }) });
       setBonusSpin(entries);
       return;
+    } else if (decision.kind === "bucket-list") {
+      const effects = id === "adventure"
+        ? { cash: -DATA.rules.bucketAdventureCost, happiness: DATA.rules.bucketAdventureHappiness }
+        : id === "course"
+          ? { cash: -DATA.rules.bucketCourseCost, knowledge: DATA.rules.bucketCourseKnowledge }
+          : { cash: -DATA.rules.bucketInvestCost, wealth: DATA.rules.bucketInvestWealth };
+      entries.push({ playerId: player.id, items: applyEffects(player, effects) });
+      setBonusSpin(entries);
+      return;
     }
 
     setStatsAnimation(entries);
     publish();
-    scheduleTurnAdvance(turnVersion, EFFECT_TIME);
+    scheduleTurnSummary(turnVersion, EFFECT_TIME);
   }
 
   function catmullRomPath(points) {
@@ -1003,9 +1219,9 @@
           const prop = {
             type: type,
             x: 85 + random() * 1430,
-            y: 75 + random() * 850
+            y: 75 + random() * 1550
           };
-          if (prop.y > 350 && prop.y < 465) continue;
+          if (prop.y > 615 && prop.y < 735) continue;
           const tooClose = occupied.some(function (other) {
             const dx = prop.x - other.x;
             const dy = prop.y - other.y;
@@ -1037,19 +1253,31 @@
         '<circle cx="-23" cy="-14" r="6" fill="#f4a6c6"/><circle cx="0" cy="-36" r="6" fill="#f6d365"/><circle cx="23" cy="-14" r="6" fill="#f4a6c6"/>' +
         '<text x="0" y="42" text-anchor="middle" class="life-landmark-label">WEDDING ARCH</text></g>';
     }
-    if (space.type === "family" || space.type === "retirement") {
+    if (space.type === "family" || space.type === "home" ||
+        space.type === "retirement") {
       const cabin = space.type === "retirement";
+      const home = space.type === "home";
       return '<g class="life-landmark" transform="translate(' + x + ' ' + y + ')"><rect x="-28" y="-7" width="56" height="39" rx="5" fill="' +
-        (cabin ? "#dfc19a" : "#fff0ce") + '" stroke="#9e765b" stroke-width="3"/><path d="M-35-7L0-35L35-7Z" fill="' +
-        (cabin ? "#a9755d" : "#d98978") + '" stroke="#9e765b" stroke-width="3"/><rect x="-7" y="7" width="14" height="25" rx="5" fill="#8eaa8b"/>' +
+        (cabin ? "#dfc19a" : home ? "#f5e1b8" : "#fff0ce") + '" stroke="#9e765b" stroke-width="3"/><path d="M-35-7L0-35L35-7Z" fill="' +
+        (cabin ? "#a9755d" : home ? "#78a987" : "#d98978") + '" stroke="#9e765b" stroke-width="3"/><rect x="-7" y="7" width="14" height="25" rx="5" fill="#8eaa8b"/>' +
         (cabin ? '<path d="M-48-25H-17" stroke="#9a6e57" stroke-width="3"/><path d="M-48-25L-43-35L-38-25L-33-35L-28-25L-23-35L-18-25" fill="#d87567"/>' :
-          '<circle cx="-42" cy="20" r="7" fill="#f4a6c6"/><circle cx="42" cy="18" r="7" fill="#f6d365"/>') +
-        '<text x="0" y="47" text-anchor="middle" class="life-landmark-label">' + (cabin ? "PENNANT CABIN" : "GARDEN COTTAGE") + '</text></g>';
+          home ? '<rect x="-22" y="1" width="10" height="10" fill="#a9d8e6"/><rect x="12" y="1" width="10" height="10" fill="#a9d8e6"/>' :
+            '<circle cx="-42" cy="20" r="7" fill="#f4a6c6"/><circle cx="42" cy="18" r="7" fill="#f6d365"/>') +
+        '<text x="0" y="47" text-anchor="middle" class="life-landmark-label">' +
+        (cabin ? "PENNANT CABIN" : home ? "LITTLE HOME" : "GARDEN COTTAGE") + '</text></g>';
     }
     if (space.type === "second-chance") {
       return '<g class="life-landmark" transform="translate(' + x + ' ' + y + ')"><path d="M-26-16Q-24-45 0-48Q24-45 26-16L13-1H-13Z" fill="#f1b1a2" stroke="#fff6e8" stroke-width="3"/>' +
         '<path d="M-16-18H16 M-10-31H10" stroke="#fff4dd" stroke-width="4"/><path d="M-12-1L-6 14H6L12-1" fill="none" stroke="#8b765d" stroke-width="2"/>' +
         '<rect x="-8" y="14" width="16" height="13" rx="2" fill="#c99a68"/><text x="0" y="46" text-anchor="middle" class="life-landmark-label">FRESH START</text></g>';
+    }
+    if (space.type === "bucket-list") {
+      return '<g class="life-landmark" transform="translate(' + x + ' ' + y + ')">' +
+        '<path d="M-44 20L-18-20L8 20Z M-18-20L8 20L37-19L54 20Z" fill="#f3d9ae" stroke="#9b775e" stroke-width="3"/>' +
+        '<path d="M-20 20V-3L-2 20 M10 20L36-12V20" fill="#d58c75" stroke="#9b775e" stroke-width="2"/>' +
+        '<rect x="43" y="9" width="18" height="25" rx="4" fill="#bd8193" stroke="#fff4e5" stroke-width="2"/>' +
+        '<path d="M47 9V3Q52-3 57 3V9" fill="none" stroke="#765c54" stroke-width="3"/>' +
+        '<text x="0" y="48" text-anchor="middle" class="life-landmark-label">PACK YOUR BAG</text></g>';
     }
     return '<g class="life-landmark" transform="translate(' + x + ' ' + y + ')"><rect x="-36" y="-12" width="72" height="42" rx="5" fill="#fff0ce" stroke="#977f6b" stroke-width="3"/>' +
       '<path d="M-44-12L0-40L44-12Z" fill="#bd8193" stroke="#977f6b" stroke-width="3"/><rect x="-6" y="4" width="12" height="26" fill="#8eaa8b"/>' +
@@ -1075,23 +1303,28 @@
 
   function renderStopSign(space) {
     const type = DATA.legendTypes[space.type];
-    const rotation = Number(space.angle || 0).toFixed(2);
     if (space.type === "retirement") {
       return '<g class="life-retirement-flag" transform="translate(' + space.x.toFixed(2) + ' ' +
-        space.y.toFixed(2) +         ') rotate(' + rotation + ')"><rect x="-57" y="-69" width="114" height="36" rx="5" fill="#fff" stroke="#e46c6c" stroke-width="3"/>' +
+        space.y.toFixed(2) + ')"><rect x="-57" y="-69" width="114" height="36" rx="5" fill="#fff" stroke="#e46c6c" stroke-width="3"/>' +
         '<rect x="-50" y="-62" width="100" height="18" fill="url(#life-checkers)"/>' +
         '<text x="0" y="-18" text-anchor="middle" class="life-stop-icon">🏁</text><text x="0" y="46" text-anchor="middle" class="life-stop-label">RETIREMENT</text></g>';
     }
     const points = "-40,-28 -28,-40 28,-40 40,-28 40,28 28,40 -28,40 -40,28";
-    const label = space.type === "second-chance" ? "SECOND CHANCE" : type.label.toUpperCase();
+    const label = space.type === "second-chance"
+      ? "SECOND CHANCE"
+      : space.type === "home"
+        ? "HOME"
+        : space.type === "bucket-list"
+          ? "BUCKET LIST"
+          : type.label.toUpperCase();
     return '<g class="life-stop-sign" transform="translate(' + space.x.toFixed(2) + ' ' +
-      space.y.toFixed(2) + ') rotate(' + rotation + ')"><polygon points="' + points +
+      space.y.toFixed(2) + ')"><polygon points="' + points +
       '" fill="' + DATA.stopSignColor + '" stroke="#fff" stroke-width="4"/><text x="0" y="9" text-anchor="middle" class="life-stop-icon">' +
       escapeHTML(type.emoji) + '</text><text x="0" y="55" text-anchor="middle" class="life-stop-label">' +
       escapeHTML(label) + '</text></g>';
   }
 
-  function renderMarker(player, index) {
+  function renderMarker(player) {
     const space = DATA.spaces.find(function (entry) {
       return entry.id === player.position;
     });
@@ -1113,10 +1346,10 @@
     const moveY = space.y - (from ? from.y : space.y);
     const move = animation
       ? '<animateTransform attributeName="transform" type="translate" from="0 0" to="' +
-        moveX.toFixed(2) + ' ' + moveY.toFixed(2) + '" dur="' + HOP_TIME +
+        moveX.toFixed(2) + ' ' + moveY.toFixed(2) + '" dur="' + hopDuration() +
         'ms" additive="sum" fill="freeze"/>'
       : "";
-    const avatar = DATA.avatars[index % DATA.avatars.length];
+    const avatar = avatarEmoji(player.avatarId);
     return '<g class="life-marker' + (isActive ? " is-active" : "") +
       (player.isLeft ? " is-left" : "") + (player.retired ? " is-retired" : "") +
       '" style="--marker-color:' + escapeHTML(player.color) + '" transform="translate(' +
@@ -1136,9 +1369,7 @@
     const collegePath = boardGeometry ? boardGeometry.collegePath : "";
     const tiles = boardGeometry ? DATA.spaces.map(renderTile).join("") : "";
     const landmarks = boardGeometry ? DATA.spaces.filter(function (space) {
-      return space.type === "marriage" || space.type === "family" ||
-        space.type === "second-chance" || space.type === "retirement" ||
-        space.type === "graduation";
+      return DATA.stopTypes.indexOf(space.type) !== -1;
     }).map(renderLandmark).join("") : "";
     const markers = boardGeometry ? state.players.map(renderMarker).join("") : "";
     const river = catmullRomPath(DATA.scenery.riverWaypoints);
@@ -1149,12 +1380,12 @@
       '<pattern id="life-checkers" width="12" height="12" patternUnits="userSpaceOnUse"><rect width="6" height="6" fill="#e46c6c"/><rect x="6" y="6" width="6" height="6" fill="#e46c6c"/></pattern>' +
       '</defs><g class="life-camera-layer" transform="translate(' + camera.x.toFixed(2) + ' ' +
       camera.y.toFixed(2) + ') scale(' + camera.zoom.toFixed(3) + ')">' +
-      '<rect class="life-water-backdrop" x="0" y="0" width="1600" height="1000" fill="url(#life-water)"/>' +
-      '<rect class="life-island" x="21" y="20" width="1558" height="960" rx="118" fill="url(#life-island)" stroke="#668f70" stroke-width="17"/>' +
-      '<rect x="33" y="32" width="1534" height="936" rx="108" fill="none" stroke="#d5e7c7" stroke-width="4" opacity=".85"/>' +
+      '<rect class="life-water-backdrop" x="0" y="0" width="' + BOARD_WIDTH + '" height="' + BOARD_HEIGHT + '" fill="url(#life-water)"/>' +
+      '<rect class="life-island" x="21" y="20" width="1558" height="1660" rx="118" fill="url(#life-island)" stroke="#668f70" stroke-width="17"/>' +
+      '<rect x="33" y="32" width="1534" height="1636" rx="108" fill="none" stroke="#d5e7c7" stroke-width="4" opacity=".85"/>' +
       '<path d="' + river + '" class="life-river"/><path d="' + river + '" class="life-river-shine"/>' +
       '<g class="life-props">' + (sceneryMarkup || "") + '</g>' +
-      '<g class="life-bridge" transform="translate(150 400) rotate(-42)"><rect x="-71" y="-19" width="142" height="38" rx="7" fill="#9a704f" stroke="#fff0d3" stroke-width="4"/>' +
+      '<g class="life-bridge" transform="translate(1480 650) rotate(-45)"><rect x="-71" y="-19" width="142" height="38" rx="7" fill="#9a704f" stroke="#fff0d3" stroke-width="4"/>' +
       '<path d="M-55-15V15 M-32-15V15 M-9-15V15 M14-15V15 M37-15V15 M60-15V15" stroke="#d4aa75" stroke-width="5"/>' +
       '<path d="M-69-22H69 M-69 22H69" stroke="#76563f" stroke-width="5"/></g>' +
       landmarks + '<path d="' + path + '" class="life-track-shadow"/><path d="' + path +
@@ -1176,12 +1407,13 @@
         }).join("") + '</div></section></div>'
       : "";
     return '<div class="life-board-column"><div class="life-board-canvas">' + board +
-      renderHud() +
+      renderHud() + renderMinimap() +
       '<div class="life-camera-controls"><button type="button" data-zoom-out aria-label="Zoom out">−</button>' +
       '<button type="button" data-zoom-in aria-label="Zoom in">+</button>' +
       '<button type="button" data-camera-fit>Fit board</button></div>' +
       '<button class="life-legend-button" type="button" data-legend-open aria-label="Show board legend">?</button>' +
-      (currentContext && currentContext.isHost && window.location.hash === "#debug" ? renderDebugPanel() : "") +
+      (state.phase !== "choosing-length" && currentContext && currentContext.isHost &&
+        window.location.hash === "#debug" ? renderDebugPanel() : "") +
       (state.phase === "choosing" ? renderChoicePopup(activePlayer(), activePlayer() &&
         activePlayer().id === localPlayerId) : "") +
       renderTurnBanner() + legend + '</div></div>';
@@ -1256,7 +1488,7 @@
     return '<article class="life-player-card' + (active ? " is-active" : "") +
       (player.isLeft ? " is-left" : "") + (player.retired ? " is-retired" : "") +
       '" style="--player-color:' + escapeHTML(player.color) + '"><div class="life-player-card-inner">' +
-      '<div class="life-hud-heading"><span class="life-avatar">' + DATA.avatars[index % DATA.avatars.length] +
+      '<div class="life-hud-heading"><span class="life-avatar">' + avatarEmoji(player.avatarId) +
       '</span><strong>' + escapeHTML(player.name) + '</strong>' +
       (tag ? '<small class="life-player-tag">' + escapeHTML(tag) + '</small>' : "") + '</div>' +
       '<div class="life-hud-career">💼 ' + escapeHTML(career) + '</div>' +
@@ -1271,6 +1503,61 @@
       state.players.map(function (player, index) {
         return renderPlayerCard(player, index, leaders);
       }).join("") + '</div>';
+  }
+
+  function cameraBounds() {
+    const zoom = Math.max(0.5, Math.min(2.5, camera.zoom));
+    const width = BOARD_WIDTH / zoom;
+    const height = BOARD_HEIGHT / zoom;
+    return {
+      x: -camera.x / zoom,
+      y: -camera.y / zoom,
+      width: width,
+      height: height
+    };
+  }
+
+  function renderMinimap() {
+    if (!boardGeometry) return "";
+    const dots = state.players.map(function (player) {
+      const space = DATA.spaces.find(function (entry) {
+        return entry.id === player.position;
+      });
+      if (!space) return "";
+      const together = state.players.filter(function (other) {
+        return other.position === player.position;
+      });
+      const seat = together.indexOf(player);
+      const angle = seat / together.length * Math.PI * 2;
+      const offset = together.length > 1 ? 34 : 0;
+      const x = space.x + Math.cos(angle) * offset;
+      const y = space.y + Math.sin(angle) * offset;
+      return '<circle cx="' + x.toFixed(2) + '" cy="' + y.toFixed(2) +
+        '" r="16" fill="' + escapeHTML(player.color) + '" stroke="#fff" stroke-width="7"' +
+        (player.isLeft ? ' opacity=".45"' : "") + '/><text x="' + x.toFixed(2) +
+        '" y="' + y.toFixed(2) + '" text-anchor="middle" dominant-baseline="central" font-size="34">' +
+        escapeHTML(avatarEmoji(player.avatarId)) + '</text>';
+    }).join("");
+    const bounds = cameraBounds();
+    return '<button class="life-minimap" type="button" data-life-minimap aria-label="Jump the board camera using the minimap">' +
+      '<svg viewBox="0 0 ' + BOARD_WIDTH + ' ' + BOARD_HEIGHT + '" aria-hidden="true">' +
+      '<rect width="' + BOARD_WIDTH + '" height="' + BOARD_HEIGHT + '" rx="90" fill="#d4e6cc"/>' +
+      '<path d="' + boardGeometry.mainPath + '" fill="none" stroke="#f0dfb6" stroke-width="78" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<path d="' + boardGeometry.collegePath + '" fill="none" stroke="#c5b7df" stroke-width="56" stroke-linecap="round" stroke-linejoin="round"/>' +
+      dots + '<rect data-minimap-view x="' + bounds.x.toFixed(2) + '" y="' +
+      bounds.y.toFixed(2) + '" width="' + bounds.width.toFixed(2) + '" height="' +
+      bounds.height.toFixed(2) + '" fill="#fff" fill-opacity=".12" stroke="#446f53" stroke-width="12" rx="18"/>' +
+      '</svg></button>';
+  }
+
+  function updateMinimap(container) {
+    const rect = container.querySelector("[data-minimap-view]");
+    if (!rect) return;
+    const bounds = cameraBounds();
+    rect.setAttribute("x", bounds.x.toFixed(2));
+    rect.setAttribute("y", bounds.y.toFixed(2));
+    rect.setAttribute("width", bounds.width.toFixed(2));
+    rect.setAttribute("height", bounds.height.toFixed(2));
   }
 
   function renderTurnBanner() {
@@ -1344,7 +1631,7 @@
       ? DATA.luckySpinResults.map(function (result, index) {
         return { label: result.label, color: DATA.wheelColors[index % DATA.wheelColors.length] };
       })
-      : DATA.spinNumbers.map(function (number, index) {
+      : (state.spinNumbers || DATA.gameLengths.standard.numbers).map(function (number, index) {
         return { label: String(number), color: DATA.wheelColors[index % DATA.wheelColors.length] };
       });
     const player = activePlayer();
@@ -1365,7 +1652,7 @@
     return spinWheel({
       title: {
         text: titleText,
-        avatar: DATA.avatars[playerIndex % DATA.avatars.length],
+        avatar: avatarEmoji(player.avatarId),
         description: kind === "lucky" ? "Lucky Spin reward wheel" : "Number wheel",
         caption: kind === "lucky" ? "An activity reward is on its way!" : "The number moves you along the path."
       },
@@ -1380,9 +1667,73 @@
   }
 
   function renderDebugPanel() {
-    return '<div class="life-debug-panel"><label>Tile # <input type="number" min="0" max="59" value="0" data-debug-tile></label>' +
+    return '<div class="life-debug-panel"><label>Tile # <input type="number" min="0" max="99" value="0" data-debug-tile></label>' +
+      '<button type="button" data-debug-next-stop>Jump to next Stop</button>' +
       '<button type="button" data-debug-jump>Jump active player to tile #</button>' +
       '<button type="button" data-debug-cash>Give active player 100K</button></div>';
+  }
+
+  function renderGameLengthChoice(isHost) {
+    if (!isHost) {
+      return '<div class="life-length-overlay"><section class="life-length-card">' +
+        '<p>The host is choosing the game length...</p></section></div>';
+    }
+    const choices = Object.keys(DATA.gameLengths).map(function (key) {
+      const option = DATA.gameLengths[key];
+      return '<button type="button" class="life-length-choice' +
+        (key === "standard" ? " is-default" : "") + '" data-game-length="' +
+        escapeHTML(key) + '"><strong>' + escapeHTML(option.label) +
+        '</strong><small>Wheel: 1 to ' + option.numbers.length + '</small>' +
+        (key === "standard" ? '<em>Default</em>' : "") + '</button>';
+    }).join("");
+    return '<div class="life-length-overlay"><section class="life-length-card" role="dialog" aria-modal="true">' +
+      '<p class="life-popup-eyebrow">Game setup</p><h3>How long should the game be?</h3>' +
+      '<div class="life-length-choices">' + choices + '</div></section></div>';
+  }
+
+  function renderPaceControl() {
+    const pace = state.pace || "manual";
+    if (!currentContext || !currentContext.isHost) {
+      const label = pace === "auto5" ? "Auto 5s" : pace === "auto10" ? "Auto 10s" : "Manual";
+      return '<span class="life-pace-tag">Pace: ' + label + '</span>';
+    }
+    return '<label class="life-pace-control"><span>PACE</span><select data-life-pace>' +
+      '<option value="manual"' + (pace === "manual" ? " selected" : "") + '>Manual</option>' +
+      '<option value="auto5"' + (pace === "auto5" ? " selected" : "") + '>Auto 5s</option>' +
+      '<option value="auto10"' + (pace === "auto10" ? " selected" : "") + '>Auto 10s</option>' +
+      '</select></label>';
+  }
+
+  function renderTurnSummary() {
+    const summary = state.turnSummary;
+    if (state.phase !== "waiting-host" || !summary) return "";
+    const chips = summary.changes.length
+      ? summary.changes.map(function (change) {
+        return '<span class="life-summary-chip is-' + escapeHTML(change.kind) + '">' +
+          escapeHTML(change.text) + '</span>';
+      }).join("")
+      : '<span class="life-summary-no-change">No stat changes this turn.</span>';
+    const isHost = Boolean(currentContext && currentContext.isHost);
+    const duration = state.countdownDuration || 0;
+    const elapsed = state.countdownStartedAt
+      ? Math.min(duration, Math.max(0, Date.now() - state.countdownStartedAt))
+      : 0;
+    const countdown = duration
+      ? '<div class="life-summary-countdown" role="progressbar" aria-label="Time until next turn" ' +
+        'aria-valuemin="0" aria-valuemax="' + duration + '" aria-valuenow="' + elapsed + '">' +
+        '<span style="--countdown-duration:' + duration + 'ms;--countdown-delay:-' +
+        elapsed + 'ms"></span></div>'
+      : "";
+    return '<section class="life-turn-summary" style="--player-color:' +
+      escapeHTML(summary.color) + '"><div class="life-summary-player"><span>' +
+      escapeHTML(avatarEmoji(summary.avatarId)) + '</span><strong>' +
+      escapeHTML(summary.name) + '</strong></div><p>' + escapeHTML(summary.sentence) +
+      '</p><div class="life-summary-chips">' + chips + '</div>' + countdown +
+      (isHost
+        ? '<button type="button" class="life-next-turn" data-next-turn="' +
+          state.advanceStep + '">Next turn</button>'
+        : '<small class="life-summary-waiting">Waiting for the host...</small>') +
+      '</section>';
   }
 
   function renderResults() {
@@ -1394,7 +1745,7 @@
       return '<article class="life-result-row' + (result.isWinner ? " is-winner" : "") +
         (result.isLeft ? " is-left" : "") + '" style="--player-color:' +
         escapeHTML(result.color) + '"><div class="life-result-player"><span class="life-player-dot"></span>' +
-        '<strong>' + escapeHTML(result.name) + '</strong>' +
+        '<strong>' + escapeHTML(avatarEmoji(result.avatarId)) + ' ' + escapeHTML(result.name) + '</strong>' +
         (result.isLeft ? '<small>left · cannot win</small>' : result.isWinner ? '<small>winner</small>' : "") +
         '</div><div class="life-result-breakdown"><span>Cash ' + result.cashPoints +
         '</span><span>Tokens ' + result.tokenPoints + '</span><span>Wealth +' +
@@ -1417,9 +1768,21 @@
       ["spinning", "spin-result", "spin-fading"].indexOf(state.phase) !== -1
       ? renderSpinner(canAct)
       : "";
-    return '<div class="life-game"><div class="life-topbar"><div>' +
-      '<p class="life-eyebrow">A cozy game of choices</p><h3>Life Path</h3></div></div>' +
+    return '<div class="life-game' + (fastAnimations ? " is-fast-animations" : "") +
+      '"><div class="life-topbar"><div>' +
+      '<p class="life-eyebrow">A cozy game of choices</p><h3>Life Path</h3></div>' +
+      '<div class="life-topbar-tools">' +
+      (state.gameLength ? '<span class="life-length-tag">' +
+        escapeHTML(DATA.gameLengths[state.gameLength].label) + '</span>' : "") +
+      renderPaceControl() +
+      '<button class="life-fast-toggle" type="button" data-fast-toggle aria-pressed="' +
+      String(fastAnimations) + '">Fast animations: ' + (fastAnimations ? "On" : "Off") +
+      '</button></div></div>' +
       '<div class="life-layout">' + renderBoard() + '</div>' + spinner +
+      renderTurnSummary() +
+      (state.phase === "choosing-length"
+        ? renderGameLengthChoice(Boolean(currentContext && currentContext.isHost))
+        : "") +
       (state.phase === "choosing" && player && !canAct
         ? '<p class="life-choice-waiting">' + escapeHTML(player.name) + ' is choosing…</p>'
         : "") +
@@ -1427,18 +1790,27 @@
   }
 
   function applyCamera(container) {
+    camera.zoom = Math.max(0.5, Math.min(2.5, camera.zoom));
+    if (camera.zoom >= 1) {
+      camera.x = Math.max(BOARD_WIDTH * (1 - camera.zoom), Math.min(0, camera.x));
+      camera.y = Math.max(BOARD_HEIGHT * (1 - camera.zoom), Math.min(0, camera.y));
+    } else {
+      camera.x = BOARD_WIDTH * (1 - camera.zoom) / 2;
+      camera.y = BOARD_HEIGHT * (1 - camera.zoom) / 2;
+    }
     const layer = container.querySelector(".life-camera-layer");
     if (layer) {
       layer.setAttribute("transform", "translate(" + camera.x.toFixed(2) + " " +
         camera.y.toFixed(2) + ") scale(" + camera.zoom.toFixed(3) + ")");
     }
+    updateMinimap(container);
   }
 
   function centerCameraOn(space) {
     if (!space) return;
     camera.zoom = 1.6;
-    camera.x = 800 - space.x * camera.zoom;
-    camera.y = 500 - space.y * camera.zoom;
+    camera.x = BOARD_WIDTH / 2 - space.x * camera.zoom;
+    camera.y = BOARD_HEIGHT / 2 - space.y * camera.zoom;
     const board = document.querySelector("[data-life-board]");
     if (board) applyCamera(board.parentNode);
   }
@@ -1457,7 +1829,7 @@
 
   function svgPoint(svg, event) {
     const matrix = svg.getScreenCTM();
-    if (!matrix) return { x: 800, y: 500 };
+    if (!matrix) return { x: BOARD_WIDTH / 2, y: BOARD_HEIGHT / 2 };
     const point = svg.createSVGPoint();
     point.x = event.clientX;
     point.y = event.clientY;
@@ -1552,7 +1924,7 @@
     container.querySelectorAll("[data-zoom-in], [data-zoom-out]").forEach(function (button) {
       button.addEventListener("click", function () {
         const factor = button.hasAttribute("data-zoom-in") ? 1.2 : 1 / 1.2;
-        zoomAt(svg, { x: 800, y: 500 }, camera.zoom * factor);
+        zoomAt(svg, { x: BOARD_WIDTH / 2, y: BOARD_HEIGHT / 2 }, camera.zoom * factor);
         pauseAutoFollow();
         applyCamera(container);
       });
@@ -1564,6 +1936,17 @@
       pauseAutoFollow();
       applyCamera(container);
     });
+    const minimap = container.querySelector("[data-life-minimap]");
+    if (minimap) {
+      minimap.addEventListener("click", function (event) {
+        const svg = minimap.querySelector("svg");
+        const point = svgPoint(svg, event);
+        camera.x = BOARD_WIDTH / 2 - point.x * camera.zoom;
+        camera.y = BOARD_HEIGHT / 2 - point.y * camera.zoom;
+        pauseAutoFollow();
+        applyCamera(container);
+      });
+    }
 
     const player = activePlayer();
     const key = player ? player.id + ":" + player.position : "";
@@ -1593,16 +1976,18 @@
   }
 
   function installDebugControls(container, context) {
-    if (window.location.hash !== "#debug" || !context.isHost) return;
+    if (window.location.hash !== "#debug" || !context.isHost || !state.gameLength) return;
     const jump = container.querySelector("[data-debug-jump]");
     const giveCash = container.querySelector("[data-debug-cash]");
+    const nextStop = container.querySelector("[data-debug-next-stop]");
     const tileInput = container.querySelector("[data-debug-tile]");
-    if (!jump || !giveCash || !tileInput) return;
+    if (!jump || !giveCash || !nextStop || !tileInput) return;
     jump.addEventListener("click", function () {
       if (window.location.hash !== "#debug" || !context.isHost) return;
       const tile = Number(tileInput.value);
       const player = activePlayer();
-      if (!player || !Number.isInteger(tile) || tile < 0 || tile >= DATA.tileCodes.length) return;
+      if (!player || state.phase === "finished" || !Number.isInteger(tile) ||
+          tile < 0 || tile >= DATA.tileCodes.length) return;
       turnVersion += 1;
       player.position = "m" + tile;
       state.currentSpin = null;
@@ -1614,6 +1999,28 @@
         makeFirstChoice(player);
       }
       publish();
+    });
+    nextStop.addEventListener("click", function () {
+      if (window.location.hash !== "#debug" || !context.isHost ||
+          !state.gameLength || state.phase === "finished") return;
+      const player = activePlayer();
+      if (!player || player.isLeft || player.retired) return;
+      const currentIndex = player.position.charAt(0) === "m"
+        ? Number(player.position.slice(1))
+        : -1;
+      const mainStops = DATA.spaces.filter(function (space) {
+        return space.id.charAt(0) === "m" && DATA.stopTypes.indexOf(space.type) !== -1;
+      });
+      const destination = mainStops.find(function (space) {
+        return Number(space.id.slice(1)) > currentIndex;
+      }) || mainStops[0];
+      turnVersion += 1;
+      player.position = destination.id;
+      state.currentSpin = null;
+      state.pendingDecision = null;
+      state.animation = null;
+      state.phase = "moving";
+      resolveLanding(player, destination, turnVersion);
     });
     giveCash.addEventListener("click", function () {
       if (window.location.hash !== "#debug" || !context.isHost) return;
@@ -1630,7 +2037,7 @@
     resultsCounted = true;
     const totals = container.querySelectorAll("[data-total]");
     const start = Date.now();
-    const duration = 950;
+    const duration = fastAnimations ? 475 : 950;
     function tick() {
       const progress = Math.min(1, (Date.now() - start) / duration);
       totals.forEach(function (element) {
@@ -1658,6 +2065,43 @@
     installCamera(container);
     installKeyboardSpin();
     installDebugControls(container, context);
+    const lengthButtons = container.querySelectorAll("[data-game-length]");
+    lengthButtons.forEach(function (button) {
+      button.addEventListener("click", function () {
+        if (!context.isHost || state.phase !== "choosing-length") return;
+        const length = button.getAttribute("data-game-length");
+        if (!Object.prototype.hasOwnProperty.call(DATA.gameLengths, length)) return;
+        state.gameLength = length;
+        state.spinNumbers = DATA.gameLengths[length].numbers.slice();
+        state.phase = "choosing";
+        makeFirstChoice(activePlayer());
+        publish();
+      });
+    });
+    const fastToggle = container.querySelector("[data-fast-toggle]");
+    if (fastToggle) {
+      fastToggle.addEventListener("click", function () {
+        fastAnimations = !fastAnimations;
+        saveFastAnimations();
+        context.render();
+      });
+    }
+    const paceSelect = container.querySelector("[data-life-pace]");
+    if (paceSelect) {
+      paceSelect.addEventListener("change", function () {
+        if (!context.isHost) return;
+        context.sendAction({ type: "pace", pace: paceSelect.value });
+      });
+    }
+    container.querySelectorAll("[data-next-turn]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        if (!context.isHost || !state || state.phase !== "waiting-host") return;
+        context.sendAction({
+          type: "next-turn",
+          step: Number(button.getAttribute("data-next-turn"))
+        });
+      });
+    });
     container.querySelectorAll("[data-spin]").forEach(function (button) {
       button.addEventListener("click", function () {
         if (button.disabled || locallyActed) return;
@@ -1691,8 +2135,27 @@
   }
 
   function handleAction(action, senderId) {
+    if (!state || state.phase === "finished") return;
+    if (action && action.type === "next-turn") {
+      advanceLifeTurn(action.step, senderId);
+      return;
+    }
+    if (action && action.type === "pace") {
+      if (!currentContext || !currentContext.isHost || senderId !== localPlayerId ||
+          ["manual", "auto5", "auto10"].indexOf(action.pace) === -1) return;
+      state.pace = action.pace;
+      if (state.phase === "waiting-host") {
+        const duration = state.pace === "auto5" ? 5000 :
+          state.pace === "auto10" ? 10000 : 0;
+        state.countdownStartedAt = duration ? Date.now() : null;
+        state.countdownDuration = duration;
+      }
+      publish();
+      schedulePaceAdvance();
+      return;
+    }
     // Never trust a guest action unless that player owns the current turn and decision.
-    if (!state || state.phase === "finished" || !isCurrentTurn(senderId)) return;
+    if (!isCurrentTurn(senderId)) return;
     if (action && action.type === "spin") {
       if (state.phase !== "awaiting-spin") return;
       beginSpin(senderId, "normal");
@@ -1731,6 +2194,11 @@
       return;
     }
 
+    if (state.phase === "waiting-host") {
+      publish();
+      return;
+    }
+
     if (departed.some(function (player) {
       return player.id === state.currentPlayerId;
     })) {
@@ -1753,11 +2221,12 @@
     start: function (players) {
       const validPlayers = players.slice(0, DATA.maxPlayers);
       state = {
-        phase: "choosing",
+        phase: "choosing-length",
         players: validPlayers.map(function (player, index) {
           return {
             id: player.id,
             name: player.name,
+            avatarId: player.avatarId,
             color: DATA.playerColors[index % DATA.playerColors.length],
             cash: DATA.startingCash,
             tokens: { wealth: 0, happiness: 0, knowledge: 0 },
@@ -1774,6 +2243,15 @@
         }),
         turnIndex: 0,
         currentPlayerId: validPlayers[0] ? validPlayers[0].id : null,
+        advanceStep: 0,
+        pace: "manual",
+        turnBaseline: null,
+        turnProgress: null,
+        turnSummary: null,
+        countdownStartedAt: null,
+        countdownDuration: 0,
+        gameLength: null,
+        spinNumbers: null,
         pendingDecision: null,
         currentSpin: null,
         bonusSpin: false,
@@ -1786,7 +2264,8 @@
         finalResults: null,
         finalWinners: []
       };
-      if (validPlayers[0]) makeFirstChoice(state.players[0]);
+      beginTurnTracking(activePlayer());
+      clearPaceTimer();
       turnVersion = 0;
       animationId = 0;
       resultReported = false;
@@ -1801,9 +2280,11 @@
       return { state: state };
     },
     initialize: function (publicState, privateState, context) {
+      clearPaceTimer();
       state = publicState;
       currentContext = context;
       localPlayerId = context.playerId;
+      fastAnimations = readFastAnimations();
       turnVersion = 0;
       locallyActed = false;
       resultsCounted = false;

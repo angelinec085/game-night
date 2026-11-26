@@ -7,11 +7,8 @@
   const BOARD_WIDTH = 1600;
   const BOARD_HEIGHT = 1700;
   const FAST_PREFERENCE_KEY = "lifePathFastAnimations";
-  const SPIN_TIME = 2800;
-  const SPIN_RESULT_TIME = 800;
-  const SPIN_FADE_TIME = 400;
-  const HOP_TIME = 250;
-  const EFFECT_TIME = 750;
+  const CROWN_NOTICE_KEY = "lifePathCrownNoticeSeen";
+  const LIFE_TIMING = window.LIFE_TIMING;
 
   let state = null;
   let currentContext = null;
@@ -30,9 +27,34 @@
   let keyHandler = null;
   let fastAnimations = false;
   let paceTimer = null;
+  let lifeViewAnimationId = null;
+  let lifeViewFocusId = null;
+  let lifeViewEndReported = false;
+  let settingsOpen = false;
+  let crownNoticeDismissed = readCrownNoticeDismissed();
+
+  function readCrownNoticeDismissed() {
+    try {
+      return window.localStorage.getItem(CROWN_NOTICE_KEY) === "true";
+    } catch (error) {
+      return false;
+    }
+  }
 
   function hopDuration() {
-    return fastAnimations ? 120 : HOP_TIME;
+    return fastAnimations ? LIFE_TIMING.fastMovement : LIFE_TIMING.movement;
+  }
+
+  function renderCrownNotice() {
+    if (crownNoticeDismissed) return "";
+    const leaders = tokenLeaders();
+    const anyLeader = Object.keys(leaders).some(function (kind) {
+      return leaders[kind].length > 0;
+    });
+    return anyLeader
+      ? '<div class="life-crown-notice" role="status"><p>Hold the crown until the end to win a Score Bonus.</p>' +
+        '<button type="button" data-crown-notice-dismiss aria-label="Dismiss crown tip">×</button></div>'
+      : "";
   }
 
   function readFastAnimations() {
@@ -40,6 +62,18 @@
       return window.localStorage.getItem(FAST_PREFERENCE_KEY) === "true";
     } catch (error) {
       return false;
+    }
+    const crownNoticeDismiss = container.querySelector("[data-crown-notice-dismiss]");
+    if (crownNoticeDismiss) {
+      crownNoticeDismiss.addEventListener("click", function () {
+        crownNoticeDismissed = true;
+        try {
+          window.localStorage.setItem(CROWN_NOTICE_KEY, "true");
+        } catch (error) {
+          // The tip stays dismissed for this game when browser storage is unavailable.
+        }
+        context.render();
+      });
     }
   }
 
@@ -212,7 +246,7 @@
         state.animation = null;
         publish();
       }
-    }, 1400);
+    }, LIFE_TIMING.floatingText);
   }
 
   function applyEffects(player, effects) {
@@ -302,7 +336,9 @@
     clearPaceTimer();
     if (!state || !currentContext || !currentContext.isHost ||
         state.phase !== "waiting-host" || state.pace === "manual") return;
-    const duration = state.pace === "auto5" ? 5000 : 10000;
+    const duration = state.pace === "auto5"
+      ? LIFE_TIMING.autoPaceShort
+      : LIFE_TIMING.autoPaceLong;
     const remaining = Math.max(0, duration - (Date.now() - state.countdownStartedAt));
     const step = state.advanceStep;
     paceTimer = setTimeout(function () {
@@ -315,8 +351,8 @@
     state.phase = "waiting-host";
     state.turnSummary = makeTurnSummary();
     state.advanceStep += 1;
-    const duration = state.pace === "auto5" ? 5000 :
-      state.pace === "auto10" ? 10000 : 0;
+    const duration = state.pace === "auto5" ? LIFE_TIMING.autoPaceShort :
+      state.pace === "auto10" ? LIFE_TIMING.autoPaceLong : 0;
     state.countdownStartedAt = duration ? Date.now() : null;
     state.countdownDuration = duration;
     publish();
@@ -612,7 +648,7 @@
     if (space.type === "retirement") {
       retirePlayer(player);
       publish();
-      scheduleTurnSummary(version, EFFECT_TIME);
+      scheduleTurnSummary(version, LIFE_TIMING.effect);
       return;
     }
     if (space.type === "activity") {
@@ -625,7 +661,7 @@
       state.phase = "resolving";
       setStatsAnimation([{ playerId: player.id, items: statsItems({ cash: cash }) }]);
       publish();
-      scheduleTurnSummary(version, EFFECT_TIME);
+      scheduleTurnSummary(version, LIFE_TIMING.effect);
       return;
     }
     if (space.type === "setback") {
@@ -633,7 +669,7 @@
       state.phase = "resolving";
       setStatsAnimation([{ playerId: player.id, items: statsItems({ cash: -20 }) }]);
       publish();
-      scheduleTurnSummary(version, EFFECT_TIME);
+      scheduleTurnSummary(version, LIFE_TIMING.effect);
       return;
     }
     if (space.type === "boost") {
@@ -646,7 +682,7 @@
     state.phase = "resolving";
     state.animation = null;
     publish();
-    scheduleTurnSummary(version, 100);
+    scheduleTurnSummary(version, LIFE_TIMING.turnTransition);
   }
 
   function retirePlayer(player) {
@@ -696,7 +732,7 @@
           : []
       };
       publish();
-      await wait(hopDuration());
+      await wait(LIFE_TIMING.movement);
       if (version !== turnVersion || !isCurrentTurn(player.id)) return;
       if (DATA.stopTypes.indexOf(destination.type) !== -1) {
         resolveLanding(player, destination, version);
@@ -740,17 +776,17 @@
     state.animation = null;
     locallyActed = false;
     publish();
-    await wait(SPIN_TIME);
+    await wait(LIFE_TIMING.spin);
     if (version !== turnVersion || !isCurrentTurn(playerId)) return;
 
     const player = findPlayer(playerId);
     state.phase = "spin-result";
     publish();
-    await wait(SPIN_RESULT_TIME);
+    await wait(LIFE_TIMING.spinResult);
     if (version !== turnVersion || !isCurrentTurn(playerId)) return;
     state.phase = "spin-fading";
     publish();
-    await wait(SPIN_FADE_TIME);
+    await wait(LIFE_TIMING.spinFade);
     if (version !== turnVersion || !isCurrentTurn(playerId)) return;
 
     if (kind === "lucky") {
@@ -760,7 +796,7 @@
       state.currentSpin = null;
       setStatsAnimation([{ playerId: player.id, items: items }]);
       publish();
-      scheduleTurnSummary(version, EFFECT_TIME);
+      scheduleTurnSummary(version, LIFE_TIMING.effect);
       return;
     }
     await movePlayer(player, number, version);
@@ -805,7 +841,7 @@
           : []
       };
       publish();
-      await wait(hopDuration());
+      await wait(LIFE_TIMING.movement);
     }
     if (version !== turnVersion || !isCurrentTurn(player.id)) return;
     if (state.turnProgress && state.turnProgress.playerId === player.id) {
@@ -853,7 +889,7 @@
         state.animation = null;
         locallyActed = false;
         publish();
-      }, HOP_TIME);
+      }, LIFE_TIMING.movement);
       return;
     } else if (decision.after === "career-switch") {
       setBonusSpin();
@@ -992,7 +1028,7 @@
 
     setStatsAnimation(entries);
     publish();
-    scheduleTurnSummary(turnVersion, EFFECT_TIME);
+    scheduleTurnSummary(turnVersion, LIFE_TIMING.effect);
   }
 
   function catmullRomPath(points) {
@@ -1324,6 +1360,29 @@
       escapeHTML(label) + '</text></g>';
   }
 
+  function renderSettings() {
+    const viewMode = window.LifeView ? window.LifeView.getViewMode() : "2d";
+    const quality = window.LifeView ? window.LifeView.getQuality() : "lite";
+    return '<div class="life-settings"><button class="life-settings-button" type="button" ' +
+      'data-life-settings-toggle aria-expanded="' + String(settingsOpen) +
+      '" aria-label="Open game settings">⚙</button>' +
+      '<section class="life-settings-menu" role="dialog" aria-label="Game settings"' +
+      (settingsOpen ? "" : " hidden") + '>' +
+      '<h4>Game settings</h4>' +
+      '<label>View<select data-life-view-mode><option value="3d"' +
+      (viewMode === "3d" ? " selected" : "") + '>3D</option><option value="2d"' +
+      (viewMode === "2d" ? " selected" : "") + '>2D</option></select></label>' +
+      '<label>Quality<select data-life-quality><option value="high"' +
+      (quality === "high" ? " selected" : "") + '>High</option><option value="lite"' +
+      (quality === "lite" ? " selected" : "") + '>Lite</option></select></label>' +
+      '<button class="life-fast-toggle" type="button" data-fast-toggle aria-pressed="' +
+      String(fastAnimations) + '">Fast animations: ' + (fastAnimations ? "On" : "Off") +
+      '</button><button type="button" data-camera-overview>Overview camera</button>' +
+      '<button type="button" data-legend-open>Legend</button>' +
+      (currentContext && currentContext.isHost ? renderPaceControl() : "") +
+      '</section></div>';
+  }
+
   function renderMarker(player) {
     const space = DATA.spaces.find(function (entry) {
       return entry.id === player.position;
@@ -1406,17 +1465,21 @@
             '</strong><small>' + escapeHTML(item.description) + '</small></div></div>';
         }).join("") + '</div></section></div>'
       : "";
-    return '<div class="life-board-column"><div class="life-board-canvas">' + board +
+    const markup = '<div class="life-board-column"><div class="life-board-canvas">' + board +
       renderHud() + renderMinimap() +
       '<div class="life-camera-controls"><button type="button" data-zoom-out aria-label="Zoom out">−</button>' +
       '<button type="button" data-zoom-in aria-label="Zoom in">+</button>' +
-      '<button type="button" data-camera-fit>Fit board</button></div>' +
+      '<button type="button" data-camera-fit>Fit board</button>' +
+      '<button type="button" data-camera-overview>Overview</button>' +
+      '<button type="button" data-camera-follow>Follow</button></div>' +
+      renderSettings() +
       '<button class="life-legend-button" type="button" data-legend-open aria-label="Show board legend">?</button>' +
       (state.phase !== "choosing-length" && currentContext && currentContext.isHost &&
         window.location.hash === "#debug" ? renderDebugPanel() : "") +
       (state.phase === "choosing" ? renderChoicePopup(activePlayer(), activePlayer() &&
         activePlayer().id === localPlayerId) : "") +
-      renderTurnBanner() + legend + '</div></div>';
+      renderTurnBanner() + renderCrownNotice() + legend + '</div></div>';
+    return window.LifeView ? window.LifeView.renderMarkup(markup) : markup;
   }
 
   function renderChoicePopup(player, canChoose) {
@@ -1667,7 +1730,8 @@
   }
 
   function renderDebugPanel() {
-    return '<div class="life-debug-panel"><label>Tile # <input type="number" min="0" max="99" value="0" data-debug-tile></label>' +
+    return '<div class="life-debug-panel"><p data-life3d-debug-stats>FPS — · Calls — · Triangles —</p>' +
+      '<label>Tile # <input type="number" min="0" max="99" value="0" data-debug-tile></label>' +
       '<button type="button" data-debug-next-stop>Jump to next Stop</button>' +
       '<button type="button" data-debug-jump>Jump active player to tile #</button>' +
       '<button type="button" data-debug-cash>Give active player 100K</button></div>';
@@ -1762,6 +1826,39 @@
   function render(publicState) {
     if (!publicState) return '<p>Preparing Life Path…</p>';
     state = publicState;
+    if (window.LifeView) {
+      window.LifeView.setFastAnimations(fastAnimations);
+      window.LifeView.setPlayers(state.players);
+      state.players.forEach(function (player) {
+        window.LifeView.updateStats(player.id, {
+          cash: player.cash,
+          tokens: player.tokens,
+          career: player.career,
+          salary: player.salary
+        });
+      });
+      if (state.currentPlayerId && state.currentPlayerId !== lifeViewFocusId) {
+        lifeViewFocusId = state.currentPlayerId;
+        window.LifeView.focusPlayer(lifeViewFocusId);
+      }
+      if (state.animation && state.animation.id !== lifeViewAnimationId) {
+        lifeViewAnimationId = state.animation.id;
+        (state.animation.entries || []).forEach(function (entry) {
+          const text = entry.items.map(function (item) {
+            return item.text;
+          }).join("  ");
+          if (text) window.LifeView.floatText(entry.playerId, text);
+        });
+      } else if (!state.animation) {
+        lifeViewAnimationId = null;
+      }
+      if (state.phase === "finished" && !lifeViewEndReported) {
+        lifeViewEndReported = true;
+        window.LifeView.gameEnded(state.finalWinners || []);
+      } else if (state.phase !== "finished") {
+        lifeViewEndReported = false;
+      }
+    }
     const player = activePlayer();
     const canAct = Boolean(player && player.id === localPlayerId && !player.isLeft && !player.retired);
     const spinner = state.phase === "awaiting-spin" ||
@@ -1816,7 +1913,7 @@
   }
 
   function pauseAutoFollow() {
-    camera.autoFollowUntil = Date.now() + 5000;
+    camera.autoFollowUntil = Date.now() + LIFE_TIMING.cameraPause;
     if (cameraResumeTimer) clearTimeout(cameraResumeTimer);
     cameraResumeTimer = setTimeout(function () {
       cameraResumeTimer = null;
@@ -1824,7 +1921,7 @@
       if (player) centerCameraOn(DATA.spaces.find(function (space) {
         return space.id === player.position;
       }));
-    }, 5000);
+    }, LIFE_TIMING.cameraPause);
   }
 
   function svgPoint(svg, event) {
@@ -2037,7 +2134,7 @@
     resultsCounted = true;
     const totals = container.querySelectorAll("[data-total]");
     const start = Date.now();
-    const duration = fastAnimations ? 475 : 950;
+    const duration = fastAnimations ? LIFE_TIMING.fastResultsCount : LIFE_TIMING.resultsCount;
     function tick() {
       const progress = Math.min(1, (Date.now() - start) / duration);
       totals.forEach(function (element) {
@@ -2061,8 +2158,25 @@
       context.render();
       return;
     }
+    if (window.LifeView) {
+      window.LifeView.init(container, DATA, state.players, {
+        localPlayerId: context.playerId,
+        focusPlayer: function (playerId) {
+          const player = findPlayer(playerId);
+          if (player) centerCameraOn(findSpace(player.position));
+        },
+        overview: function () {
+          camera.x = 0;
+          camera.y = 0;
+          camera.zoom = 1;
+          applyCamera(container);
+        }
+      });
+    }
     animateResultTotals(container);
-    installCamera(container);
+    if (!window.LifeView || window.LifeView.getViewMode() === "2d") {
+      installCamera(container);
+    }
     installKeyboardSpin();
     installDebugControls(container, context);
     const lengthButtons = container.querySelectorAll("[data-game-length]");
@@ -2078,21 +2192,19 @@
         publish();
       });
     });
-    const fastToggle = container.querySelector("[data-fast-toggle]");
-    if (fastToggle) {
+    container.querySelectorAll("[data-fast-toggle]").forEach(function (fastToggle) {
       fastToggle.addEventListener("click", function () {
         fastAnimations = !fastAnimations;
         saveFastAnimations();
         context.render();
       });
-    }
-    const paceSelect = container.querySelector("[data-life-pace]");
-    if (paceSelect) {
+    });
+    container.querySelectorAll("[data-life-pace]").forEach(function (paceSelect) {
       paceSelect.addEventListener("change", function () {
         if (!context.isHost) return;
         context.sendAction({ type: "pace", pace: paceSelect.value });
       });
-    }
+    });
     container.querySelectorAll("[data-next-turn]").forEach(function (button) {
       button.addEventListener("click", function () {
         if (!context.isHost || !state || state.phase !== "waiting-host") return;
@@ -2118,18 +2230,65 @@
         context.sendAction({ type: "choice", id: button.getAttribute("data-choice") });
       });
     });
-    const showLegend = container.querySelector("[data-legend-open]");
-    if (showLegend) {
+    container.querySelectorAll("[data-legend-open]").forEach(function (showLegend) {
       showLegend.addEventListener("click", function () {
         legendOpen = true;
         context.render();
       });
-    }
+    });
     const closeLegend = container.querySelector("[data-legend-close]");
     if (closeLegend) {
       closeLegend.addEventListener("click", function () {
         legendOpen = false;
         context.render();
+      });
+    }
+    container.querySelectorAll("[data-camera-overview]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        if (window.LifeView) window.LifeView.overview();
+      });
+    });
+    container.querySelectorAll("[data-camera-follow]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        if (window.LifeView && state.currentPlayerId) {
+          window.LifeView.focusPlayer(state.currentPlayerId);
+        }
+      });
+    });
+    container.querySelectorAll("[data-zoom-in], [data-zoom-out]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        if (window.LifeView && window.LifeView.getViewMode() === "3d") {
+          window.LifeView.zoom(button.hasAttribute("data-zoom-in") ? 0.85 : 1.18);
+        }
+      });
+    });
+    container.querySelectorAll("[data-camera-fit]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        if (window.LifeView && window.LifeView.getViewMode() === "3d") {
+          window.LifeView.overview();
+        }
+      });
+    });
+    const settingsToggle = container.querySelector("[data-life-settings-toggle]");
+    if (settingsToggle) {
+      settingsToggle.addEventListener("click", function () {
+        settingsOpen = !settingsOpen;
+        context.render();
+      });
+    }
+    const viewSelect = container.querySelector("[data-life-view-mode]");
+    if (viewSelect) {
+      viewSelect.addEventListener("change", function () {
+        if (window.LifeView) {
+          window.LifeView.setViewMode(viewSelect.value);
+          context.render();
+        }
+      });
+    }
+    const qualitySelect = container.querySelector("[data-life-quality]");
+    if (qualitySelect) {
+      qualitySelect.addEventListener("change", function () {
+        if (window.LifeView) window.LifeView.setQuality(qualitySelect.value);
       });
     }
   }
@@ -2145,8 +2304,8 @@
           ["manual", "auto5", "auto10"].indexOf(action.pace) === -1) return;
       state.pace = action.pace;
       if (state.phase === "waiting-host") {
-        const duration = state.pace === "auto5" ? 5000 :
-          state.pace === "auto10" ? 10000 : 0;
+        const duration = state.pace === "auto5" ? LIFE_TIMING.autoPaceShort :
+          state.pace === "auto10" ? LIFE_TIMING.autoPaceLong : 0;
         state.countdownStartedAt = duration ? Date.now() : null;
         state.countdownDuration = duration;
       }
@@ -2271,8 +2430,12 @@
       resultReported = false;
       locallyActed = false;
       resultsCounted = false;
+      settingsOpen = false;
       camera = { x: 0, y: 0, zoom: 1, autoFollowUntil: 0, followKey: null };
       legendOpen = false;
+      lifeViewAnimationId = null;
+      lifeViewFocusId = null;
+      lifeViewEndReported = false;
       if (cameraResumeTimer) clearTimeout(cameraResumeTimer);
       cameraResumeTimer = null;
       if (floatTimer) clearTimeout(floatTimer);
@@ -2289,6 +2452,10 @@
       locallyActed = false;
       resultsCounted = false;
       resultReported = state.phase === "finished";
+      settingsOpen = false;
+      lifeViewAnimationId = null;
+      lifeViewFocusId = null;
+      lifeViewEndReported = state.phase === "finished";
       camera = { x: 0, y: 0, zoom: 1, autoFollowUntil: 0, followKey: null };
       legendOpen = false;
       if (cameraResumeTimer) clearTimeout(cameraResumeTimer);
@@ -2313,7 +2480,15 @@
     onMessage: handleAction,
     onPlayersChanged: onPlayersChanged,
     render: render,
-    afterRender: afterRender
+    afterRender: afterRender,
+    destroy: function () {
+      clearPaceTimer();
+      if (floatTimer) window.clearTimeout(floatTimer);
+      floatTimer = null;
+      if (cameraResumeTimer) window.clearTimeout(cameraResumeTimer);
+      cameraResumeTimer = null;
+      if (window.LifeView) window.LifeView.destroy();
+    }
   };
 
   window.GameNightGames = window.GameNightGames || [];

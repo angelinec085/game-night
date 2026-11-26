@@ -427,14 +427,22 @@
     }
   }
 
+  function destroyActiveGame() {
+    if (activeGame && typeof activeGame.destroy === "function") {
+      activeGame.destroy();
+    }
+  }
+
   function startGame(gameData, privateState) {
-    activeGame = games.find(function (game) {
+    const nextGame = games.find(function (game) {
       return game.id === gameData.id;
     });
-    if (!activeGame) {
+    if (!nextGame) {
       roomMessage.textContent = "This game isn't available in this browser.";
       return;
     }
+    destroyActiveGame();
+    activeGame = nextGame;
 
     appElement.classList.toggle("has-card-auction", activeGame.id === "card-auction");
     appElement.classList.toggle("has-life-path", activeGame.id === "life-path");
@@ -451,6 +459,7 @@
   }
 
   function returnToLobby() {
+    destroyActiveGame();
     activeGame = null;
     activeGameState = null;
     pendingGame = null;
@@ -522,6 +531,7 @@
         const disconnectedRoom = room;
         room = null;
         if (disconnectedRoom) disconnectedRoom.close();
+        destroyActiveGame();
         clearSavedRoom();
         appElement.classList.remove("has-card-auction");
         appElement.classList.remove("has-life-path");
@@ -532,6 +542,7 @@
         const disconnectedRoom = room;
         room = null;
         if (disconnectedRoom) disconnectedRoom.close();
+        destroyActiveGame();
         activeGame = null;
         appElement.classList.remove("has-card-auction");
         appElement.classList.remove("has-life-path");
@@ -665,6 +676,7 @@
   document.getElementById("leave-room").addEventListener("click", function () {
     if (room) room.close();
     room = null;
+    destroyActiveGame();
     activeGame = null;
     activeGameState = null;
     appElement.classList.remove("has-card-auction");

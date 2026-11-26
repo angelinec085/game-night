@@ -1,0 +1,96 @@
+<!-- This is the single page that loads the lobby and its styles and scripts. -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#e9f4e8">
+    <title>Game Night With Friends</title>
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <main class="app">
+      <header class="site-header">
+        <div class="brand-mark" aria-hidden="true">✿</div>
+        <p class="eyebrow">A little place to play together</p>
+        <h1>Game Night With Friends</h1>
+      </header>
+
+      <section id="home-screen" class="card screen" aria-labelledby="home-title">
+        <h2 id="home-title">Welcome, friend!</h2>
+        <p class="intro">Pick a nickname, then start a room or join one already in progress.</p>
+
+        <form id="create-form" class="form-section">
+          <label for="nickname">Your nickname</label>
+          <input id="nickname" name="nickname" type="text" maxlength="20" autocomplete="nickname" placeholder="e.g. Sunny" required>
+          <button class="button button-primary" type="submit">Create Room</button>
+        </form>
+
+        <div class="divider"><span>or join friends</span></div>
+
+        <form id="join-form" class="form-section">
+          <label for="room-code-input">Room code</label>
+          <input id="room-code-input" name="room-code" type="text" maxlength="4" autocomplete="off" placeholder="ABCD" aria-describedby="room-code-help" required>
+          <p id="room-code-help" class="field-help">Ask the host for their four-letter code.</p>
+          <button class="button button-secondary" type="submit">Join Room</button>
+        </form>
+        <p id="home-message" class="message" role="status" aria-live="polite"></p>
+      </section>
+
+      <section id="room-screen" class="card screen" aria-labelledby="room-title" hidden>
+        <button id="leave-room" class="text-button" type="button">← Leave room</button>
+        <p class="eyebrow room-eyebrow">Your room code</p>
+        <h2 id="room-title" class="room-code" aria-label="Room code"></h2>
+        <p class="field-help">Share this code with your friends.</p>
+
+        <div class="player-heading">
+          <h3>Players</h3>
+          <span id="player-count" class="player-count"></span>
+        </div>
+        <ul id="player-list" class="player-list" aria-live="polite"></ul>
+
+        <div class="game-picker-section">
+          <h3>Choose a game</h3>
+          <div id="game-picker" class="game-picker"></div>
+        </div>
+        <div id="host-controls" class="host-controls" hidden>
+          <p id="start-help" class="field-help">At least 2 players are needed to start.</p>
+          <button id="start-game" class="button button-primary" type="button" disabled>Start Game</button>
+        </div>
+        <p id="guest-waiting" class="field-help guest-waiting" hidden>Waiting for the host to start a game.</p>
+        <p id="room-message" class="message" role="status" aria-live="polite"></p>
+      </section>
+
+      <section id="game-screen" class="card screen" aria-labelledby="game-title" hidden>
+        <p class="eyebrow">Game night is underway</p>
+        <div class="game-layout">
+          <div class="game-main">
+            <h2 id="game-title">Game</h2>
+            <div id="game-content"></div>
+            <p id="game-notice" class="message game-notice" role="status" aria-live="polite"></p>
+            <div id="game-host-controls" class="game-host-controls" hidden>
+              <button id="back-to-lobby" class="button button-secondary" type="button">Back to Lobby</button>
+            </div>
+            <p id="game-guest-waiting" class="field-help" hidden>Waiting for the host to start a game.</p>
+          </div>
+          <aside class="game-players" aria-label="Players in this room">
+            <h3>Players</h3>
+            <ul id="game-player-list" class="player-list" aria-live="polite"></ul>
+          </aside>
+        </div>
+      </section>
+
+      <section id="closed-screen" class="card screen" aria-labelledby="closed-title" hidden>
+        <h2 id="closed-title">The host left, so this room has closed</h2>
+        <p class="intro">You can head back home and join another room.</p>
+        <button id="closed-home" class="button button-primary" type="button">Back to Home</button>
+      </section>
+    </main>
+
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <script src="js/net.js"></script>
+    <script src="js/games/test-game.js"></script>
+    <script src="js/games/card-auction.js"></script>
+    <script src="js/main.js"></script>
+  </body>
+</html>
